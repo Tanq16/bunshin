@@ -1,1 +1,5 @@
-# bunshin
+# Bunshin
+
+WIP
+
+Docker compose stack manager
