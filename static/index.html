@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=1280, initial-scale=1.0">
+    <title>Bunshin | Desktop</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
+    <link rel="stylesheet" href="https://unpkg.com/@catppuccin/highlightjs@1.0.1/css/catppuccin-mocha.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/yaml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/ini.min.js"></script>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+
+    <style>
+        :root {
+            --rosewater: #f5e0dc; --flamingo: #f2cdcd; --pink: #f5c2e7; --mauve: #cba6f7;
+            --red: #f38ba8; --maroon: #eba0ac; --peach: #fab387; --yellow: #f9e2af;
+            --green: #a6e3a1; --teal: #94e2d5; --sky: #89dceb; --sapphire: #74c7ec;
+            --blue: #89b4fa; --lavender: #b4befe; --text: #cdd6f4; --subtext1: #bac2de;
+            --subtext0: #a6adc8; --overlay2: #9399b2; --overlay1: #7f849c; --overlay0: #6c7086;
+            --surface2: #585b70; --surface1: #45475a; --surface0: #313244; --base: #1e1e2e;
+            --mantle: #181825; --crust: #11111b;
+        }
+
+        body { font-family: 'Inter', sans-serif; background-color: var(--base); color: var(--text); overflow: hidden; }
+        .tab-active { background-color: var(--mauve); color: var(--base); }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+
+        .editor-container { position: relative; flex-grow: 1; overflow: hidden; }
+        .code-input, .code-output {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            margin: 0; padding: 24px; border: none; outline: none;
+            font-family: 'JetBrains Mono', monospace !important; font-size: 13px;
+            line-height: 1.6; white-space: pre; overflow: auto; tab-size: 2;
+        }
+        .code-input { z-index: 10; color: transparent; caret-color: var(--text); background: transparent !important; resize: none; }
+        .code-output { z-index: 5; pointer-events: none; background: transparent !important; }
+        .hljs { background: transparent !important; padding: 0 !important; }
+        
+        .pill { border-radius: 9999px; }
+    </style>
+</head>
+<body class="h-screen select-none">
+
+    <div class="flex h-full w-full">
+        <aside class="w-64 bg-ctp-mantle flex flex-col border-r border-ctp-crust">
+            <div class="p-6 pb-2">
+                <div class="flex items-center gap-3 mb-8">
+                    <div class="w-10 h-10 bg-ctp-mauve rounded-xl flex items-center justify-center">
+                        <i class="fas fa-ghost text-ctp-base text-xl"></i>
+                    </div>
+                    <h1 class="text-xl font-bold tracking-tight">Bunshin</h1>
+                </div>
+                <div class="relative">
+                    <input type="text" placeholder="Jump to stack..." class="w-full bg-ctp-crust border-none pill py-2.5 pl-10 pr-4 text-sm focus:ring-1 focus:ring-ctp-mauve transition-all">
+                    <i class="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-xs text-ctp-overlay0"></i>
+                </div>
+            </div>
+
+            <nav id="stack-list" class="flex-grow p-4 mt-2 space-y-1 overflow-y-auto no-scrollbar">
+                <div class="text-[10px] uppercase tracking-widest text-ctp-overlay0 font-bold px-4 mb-2">My Stacks</div>
+            </nav>
+
+            <div class="p-6 bg-ctp-crust/30">
+                <button onclick="createNewStack()" class="w-full bg-ctp-surface0 text-sm font-bold py-3 px-4 pill hover:bg-ctp-surface1 flex items-center justify-center gap-2 transition-all">
+                    <i class="fas fa-plus-circle text-ctp-mauve"></i> New Stack
+                </button>
+            </div>
+        </aside>
+
+        <main class="flex-1 flex flex-col bg-ctp-base overflow-hidden">
+            <header class="h-20 flex items-center justify-between px-8 flex-shrink-0 border-b border-ctp-crust">
+                <div id="header-info" class="invisible">
+                    <h2 id="current-stack-title" class="text-xl font-bold leading-tight">...</h2>
+                    <div class="flex items-center gap-2 mt-0.5">
+                        <span id="status-dot" class="w-2 h-2 rounded-full bg-ctp-surface2"></span>
+                        <span id="status-text" class="text-[11px] text-ctp-subtext0 font-bold uppercase tracking-wider">Loading</span>
+                    </div>
+                </div>
+
+                <div id="tabs-container" class="invisible flex bg-ctp-mantle p-1.5 pill gap-1">
+                    <button onclick="switchTab('stack')" id="tab-stack" class="px-6 py-1.5 pill text-xs font-bold transition-all tab-active">STACK</button>
+                    <button onclick="switchTab('logs')" id="tab-logs" class="px-6 py-1.5 pill text-xs font-bold transition-all text-ctp-subtext0 hover:bg-ctp-surface1">LOGS</button>
+                    <button onclick="switchTab('shell')" id="tab-shell" class="px-6 py-1.5 pill text-xs font-bold transition-all text-ctp-subtext0 hover:bg-ctp-surface1">SHELL</button>
+                </div>
+
+                <div id="actions-container" class="invisible flex items-center gap-2">
+                    <button onclick="saveStack()" class="bg-ctp-blue/10 text-ctp-blue hover:bg-ctp-blue hover:text-ctp-base px-6 py-2 pill text-xs font-bold transition-all flex items-center gap-2">
+                        <i class="fas fa-save text-[10px]"></i> SAVE
+                    </button>
+                    <button id="toggle-btn" onclick="toggleStack()" class="bg-ctp-green/10 text-ctp-green hover:bg-ctp-green hover:text-ctp-base px-6 py-2 pill text-xs font-bold transition-all flex items-center gap-2">
+                        <i class="fas fa-play text-[10px]"></i> START
+                    </button>
+                    <button onclick="performAction('update')" class="bg-ctp-sapphire/10 text-ctp-sapphire hover:bg-ctp-sapphire hover:text-ctp-base px-6 py-2 pill text-xs font-bold transition-all flex items-center gap-2">
+                        <i class="fas fa-sync-alt text-[10px]"></i> UPDATE
+                    </button>
+                </div>
+            </header>
+
+            <div class="flex-grow p-6 flex flex-col overflow-hidden">
+                <div id="pane-stack" class="flex-grow flex flex-row gap-4 h-full">
+                    <div class="flex-1 flex flex-col bg-ctp-mantle rounded-3xl overflow-hidden border border-ctp-surface0">
+                        <div class="p-4 border-b border-ctp-surface0 flex items-center gap-2 text-ctp-blue">
+                            <i class="fab fa-docker"></i>
+                            <span class="text-[10px] font-bold uppercase tracking-widest">docker-compose.yml</span>
+                        </div>
+                        <div class="editor-container">
+                            <textarea id="yaml-input" class="code-input no-scrollbar" spellcheck="false" oninput="updateHighlight('yaml')"></textarea>
+                            <pre class="code-output no-scrollbar hljs"><code id="yaml-output-block"></code></pre>
+                        </div>
+                    </div>
+                    <div class="flex-1 flex flex-col bg-ctp-mantle rounded-3xl overflow-hidden border border-ctp-surface0">
+                        <div class="p-4 border-b border-ctp-surface0 flex items-center gap-2 text-ctp-teal">
+                            <i class="fas fa-key"></i>
+                            <span class="text-[10px] font-bold uppercase tracking-widest">.env variables</span>
+                        </div>
+                        <div class="editor-container">
+                            <textarea id="env-input" class="code-input no-scrollbar" spellcheck="false" oninput="updateHighlight('env')"></textarea>
+                            <pre class="code-output no-scrollbar hljs"><code id="env-output-block"></code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="pane-logs" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-y-auto no-scrollbar font-mono text-[12px] text-ctp-subtext0 leading-relaxed"></div>
+                <div id="pane-shell" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-hidden">
+                    <div id="terminal" class="h-full w-full"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="static/app.js"></script>
+</body>
+</html>
