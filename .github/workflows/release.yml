@@ -1,0 +1,105 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check-commit:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Version
+        id: version
+        run: |
+          LATEST_TAG=$(gh release list -L 1 | cut -f 1 | sed 's/Release //' || echo "v0")
+          LATEST_TAG=${LATEST_TAG:-v0}
+          VERSION=$(echo $LATEST_TAG | sed 's/v//')
+          NEW_VERSION="v$((VERSION + 1))"
+          
+          echo "Previous version: $LATEST_TAG"
+          echo "New version: $NEW_VERSION"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create Release
+        run: |
+          gh release create "${{ steps.version.outputs.new_version }}" \
+            --title "Release ${{ steps.version.outputs.new_version }}" \
+            --draft \
+            --notes "Bunshin latest release." \
+            --target ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: check-commit
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [linux, darwin]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build Binary
+        run: |
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -ldflags="-s -w" -o bunshin-${{ matrix.os }}-${{ matrix.arch }}
+
+      - name: Upload Release Asset
+        run: |
+          gh release upload "${{ needs.check-commit.outputs.version }}" "bunshin-${{ matrix.os }}-${{ matrix.arch }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: tanq16
+          password: ${{ secrets.DOCKER_ACCESS_TOKEN }}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: tanq16/bunshin:main
+
+  publish:
+    needs: [check-commit, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish Release
+        run: |
+          gh release edit "${{ needs.check-commit.outputs.version }}" --draft=false
+        env:
+          GH_TOKEN: ${{ github.token }}

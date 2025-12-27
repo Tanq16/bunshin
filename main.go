@@ -26,7 +26,7 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 )
 
-//go:embed static/*
+//go:embed frontend/*
 var staticFiles embed.FS
 
 var (
@@ -74,8 +74,8 @@ func main() {
 		log.Fatal("Moby SDK Connection Error:", err)
 	}
 
-	// Create a sub-filesystem starting at the "static" directory
-	staticFS, err := fs.Sub(staticFiles, "static")
+	// Create a sub-filesystem starting at the "frontend" directory
+	staticFS, err := fs.Sub(staticFiles, "frontend")
 	if err != nil {
 		log.Fatal("Failed to create static filesystem:", err)
 	}
@@ -88,7 +88,7 @@ func main() {
 	http.HandleFunc("/ws/logs", handleLogs(cli))
 	http.HandleFunc("/ws/shell", handleShell(cli))
 
-	// Serve static files from the root path
+	// Serve frontend files from the root path
 	http.Handle("/", http.FileServer(http.FS(staticFS)))
 
 	log.Println("Bunshin v0.1.0 | Port :8080 | Data:", dataPath)
