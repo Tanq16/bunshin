@@ -15,7 +15,7 @@ async function loadStacks() {
         const btn = document.createElement('button');
         btn.onclick = () => selectStack(s);
         const activeClass = currentStack === s ? 'bg-ctp-surface0 text-ctp-text' : 'hover:bg-ctp-surface0/50 text-ctp-subtext0';
-        btn.className = `w-full flex items-center px-4 py-3 pill transition-all ${activeClass}`;
+        btn.className = `w-full flex items-center px-4 py-3 rounded-pill transition-all ${activeClass}`;
         btn.innerHTML = `
             <i class="fas fa-server mr-3 ${currentStack === s ? 'text-ctp-green' : 'text-ctp-blue'} text-sm"></i>
             <span class="text-sm font-medium">${s}</span>
@@ -46,23 +46,49 @@ async function selectStack(name) {
     
     if (statusInterval) clearInterval(statusInterval);
     statusInterval = setInterval(updateStatus, 5000);
+    
+    // Setup scroll sync after loading content
+    setupEditorScrollSync();
 }
 
 function updateHighlight(id) {
     const input = document.getElementById(`${id}-input`);
-    const output = document.getElementById(`${id}-output-block`);
+    const outputBlock = document.getElementById(`${id}-output-block`);
+    const outputPre = document.getElementById(`${id}-output-pre`);
+    if (!input || !outputBlock || !outputPre) return;
+
+    let content = input.value;
+
+    // Sync scrolling
+    outputPre.scrollTop = input.scrollTop;
+    outputPre.scrollLeft = input.scrollLeft;
+
     const lang = id === 'yaml' ? 'yaml' : 'ini';
-    output.innerHTML = hljs.highlight(input.value, { language: lang }).value;
+    const highlighted = hljs.highlight(content, { language: lang }).value;
+    outputBlock.innerHTML = highlighted + (content.endsWith('\n') ? '\n' : '');
+}
+
+function setupEditorScrollSync() {
+    ['yaml', 'env'].forEach(id => {
+        const input = document.getElementById(`${id}-input`);
+        const outputPre = document.getElementById(`${id}-output-pre`);
+        if (input && outputPre) {
+            input.addEventListener('scroll', () => {
+                outputPre.scrollTop = input.scrollTop;
+                outputPre.scrollLeft = input.scrollLeft;
+            });
+        }
+    });
 }
 
 function switchTab(tab) {
     ['stack', 'logs', 'shell'].forEach(t => {
         document.getElementById(`pane-${t}`).classList.add('hidden');
-        document.getElementById(`tab-${t}`).className = "px-6 py-1.5 pill text-xs font-bold transition-all text-ctp-subtext0 hover:bg-ctp-surface1";
+        document.getElementById(`tab-${t}`).className = "px-6 py-1.5 rounded-pill text-xs font-bold transition-all text-ctp-subtext0 hover:bg-ctp-surface1";
     });
     
     document.getElementById(`pane-${tab}`).classList.remove('hidden');
-    document.getElementById(`tab-${tab}`).className = "px-6 py-1.5 pill text-xs font-bold transition-all tab-active";
+    document.getElementById(`tab-${tab}`).className = "px-6 py-1.5 rounded-pill text-xs font-bold transition-all tab-active";
 
     stopStreams();
     if (tab === 'logs') startLogs();
@@ -79,16 +105,16 @@ async function updateStatus() {
     const btn = document.getElementById('toggle-btn');
 
     if (status === 'Operational') {
-        dot.className = "w-2 h-2 rounded-full bg-ctp-green";
+        dot.className = "w-2 h-2 bg-ctp-green rounded-full";
         text.className = "text-[11px] text-ctp-green font-bold uppercase tracking-wider";
         text.innerText = "Operational";
-        btn.className = "bg-ctp-red/10 text-ctp-red hover:bg-ctp-red hover:text-ctp-base px-6 py-2 pill text-xs font-bold transition-all flex items-center gap-2";
+        btn.className = "bg-ctp-red/10 text-ctp-red hover:bg-ctp-red hover:text-ctp-base px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2";
         btn.innerHTML = '<i class="fas fa-stop text-[10px]"></i> STOP';
     } else {
-        dot.className = "w-2 h-2 rounded-full bg-ctp-surface2";
+        dot.className = "w-2 h-2 bg-ctp-surface2 rounded-full";
         text.className = "text-[11px] text-ctp-subtext0 font-bold uppercase tracking-wider";
         text.innerText = "Stopped";
-        btn.className = "bg-ctp-green/10 text-ctp-green hover:bg-ctp-green hover:text-ctp-base px-6 py-2 pill text-xs font-bold transition-all flex items-center gap-2";
+        btn.className = "bg-ctp-green/10 text-ctp-green hover:bg-ctp-green hover:text-ctp-base px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2";
         btn.innerHTML = '<i class="fas fa-play text-[10px]"></i> START';
     }
 }
@@ -115,7 +141,7 @@ async function performAction(action) {
 
 function toggleStack() {
     const status = document.getElementById('status-text').innerText;
-    performAction(status === 'OPERATIONAL' ? 'stop' : 'start');
+    performAction(status.toLowerCase() === 'operational' ? 'stop' : 'start');
 }
 
 function startLogs() {
@@ -154,14 +180,89 @@ function stopStreams() {
 }
 
 function createNewStack() {
-    const name = prompt("Enter stack name:");
-    if (name) {
-        currentStack = name;
-        document.getElementById('yaml-input').value = "services:\n  app:\n    image: nginx";
-        document.getElementById('env-input').value = "";
-        saveStack().then(loadStacks);
-        selectStack(name);
-    }
+    const modal = document.getElementById('new-stack-modal');
+    const input = document.getElementById('new-stack-name');
+    modal.classList.remove('hidden');
+    input.value = '';
+    input.focus();
+    
+    // Allow Enter key to submit
+    input.onkeypress = (e) => {
+        if (e.key === 'Enter') {
+            confirmNewStack();
+        }
+    };
+    
+    // Allow Escape key to cancel
+    const escHandler = (e) => {
+        if (e.key === 'Escape') {
+            cancelNewStack();
+            document.removeEventListener('keydown', escHandler);
+        }
+    };
+    document.addEventListener('keydown', escHandler);
 }
 
-window.onload = loadStacks;
+function cancelNewStack() {
+    const modal = document.getElementById('new-stack-modal');
+    modal.classList.add('hidden');
+}
+
+async function confirmNewStack() {
+    const input = document.getElementById('new-stack-name');
+    const name = input.value.trim();
+    
+    if (!name) {
+        input.classList.add('border-ctp-red');
+        input.placeholder = 'Stack name is required!';
+        setTimeout(() => {
+            input.classList.remove('border-ctp-red');
+            input.placeholder = 'my-awesome-stack';
+        }, 2000);
+        return;
+    }
+    
+    // Validate stack name (alphanumeric, dashes, underscores)
+    if (!/^[a-z0-9-_]+$/i.test(name)) {
+        input.classList.add('border-ctp-red');
+        const oldPlaceholder = input.placeholder;
+        input.placeholder = 'Use only letters, numbers, dashes, and underscores';
+        setTimeout(() => {
+            input.classList.remove('border-ctp-red');
+            input.placeholder = oldPlaceholder;
+        }, 2000);
+        return;
+    }
+    
+    cancelNewStack();
+    
+    // Create the stack with default template
+    currentStack = name;
+    document.getElementById('yaml-input').value = `version: '3.9'
+
+services:
+  app:
+    image: nginx:latest
+    container_name: ${name}_app
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      - PUID=\${PUID}
+      - PGID=\${PGID}
+    labels:
+      - "bunshin.managed=true"`;
+    
+    document.getElementById('env-input').value = `# Environment Variables
+PUID=1000
+PGID=1000`;
+    
+    await saveStack();
+    await loadStacks();
+    selectStack(name);
+}
+
+window.onload = () => {
+    loadStacks();
+    setupEditorScrollSync();
+};

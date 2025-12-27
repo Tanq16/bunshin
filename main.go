@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -73,6 +74,12 @@ func main() {
 		log.Fatal("Moby SDK Connection Error:", err)
 	}
 
+	// Create a sub-filesystem starting at the "static" directory
+	staticFS, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		log.Fatal("Failed to create static filesystem:", err)
+	}
+
 	http.HandleFunc("/api/stacks", handleListStacks)
 	http.HandleFunc("/api/stack/get", handleGetStack)
 	http.HandleFunc("/api/stack/save", handleSaveStack)
@@ -80,7 +87,9 @@ func main() {
 	http.HandleFunc("/api/stack/action", handleAction(cli))
 	http.HandleFunc("/ws/logs", handleLogs(cli))
 	http.HandleFunc("/ws/shell", handleShell(cli))
-	http.Handle("/", http.FileServer(http.FS(staticFiles)))
+
+	// Serve static files from the root path
+	http.Handle("/", http.FileServer(http.FS(staticFS)))
 
 	log.Println("Bunshin v0.1.0 | Port :8080 | Data:", dataPath)
 	log.Fatal(http.ListenAndServe(":8080", nil))

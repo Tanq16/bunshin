@@ -5,16 +5,26 @@
     <meta name="viewport" content="width=1280, initial-scale=1.0">
     <title>Bunshin | Desktop</title>
 
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    
+
+    <!-- Highlight.js & Catppuccin Theme -->
     <link rel="stylesheet" href="https://unpkg.com/@catppuccin/highlightjs@1.0.1/css/catppuccin-mocha.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/yaml.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/ini.min.js"></script>
 
+    <!-- Xterm.js -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
     <style>
         :root {
@@ -27,37 +37,107 @@
             --mantle: #181825; --crust: #11111b;
         }
 
-        body { font-family: 'Inter', sans-serif; background-color: var(--base); color: var(--text); overflow: hidden; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--base);
+            color: var(--text);
+            overflow: hidden;
+            min-width: 1200px;
+        }
+
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--surface1); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--surface2); }
+
         .tab-active { background-color: var(--mauve); color: var(--base); }
         .no-scrollbar::-webkit-scrollbar { display: none; }
 
-        .editor-container { position: relative; flex-grow: 1; overflow: hidden; }
-        .code-input, .code-output {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            margin: 0; padding: 24px; border: none; outline: none;
-            font-family: 'JetBrains Mono', monospace !important; font-size: 13px;
-            line-height: 1.6; white-space: pre; overflow: auto; tab-size: 2;
+        /* Editor Overlays */
+        .editor-container {
+            position: relative;
+            flex-grow: 1;
+            overflow: hidden;
         }
-        .code-input { z-index: 10; color: transparent; caret-color: var(--text); background: transparent !important; resize: none; }
-        .code-output { z-index: 5; pointer-events: none; background: transparent !important; }
-        .hljs { background: transparent !important; padding: 0 !important; }
-        
-        .pill { border-radius: 9999px; }
+
+        /* Common Code Layout */
+        .code-input, .code-output {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            margin: 0; padding: 0;
+            border: none;
+            outline: none;
+            font-family: 'JetBrains Mono', monospace !important;
+            font-size: 13px;
+            line-height: 1.6;
+            white-space: pre;
+            overflow: auto;
+            tab-size: 2;
+        }
+
+        /* Textarea overlay */
+        .code-input {
+            z-index: 10;
+            color: transparent;
+            caret-color: var(--text);
+            background: transparent !important;
+            resize: none;
+        }
+
+        /* Highlight container */
+        .code-output {
+            z-index: 5;
+            pointer-events: none;
+            background: transparent !important;
+        }
+
+        /* Ensure HLJS doesn't force its own background */
+        .hljs {
+            background: transparent !important;
+            padding: 0 !important;
+        }
     </style>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'ctp-rosewater': 'var(--rosewater)', 'ctp-mauve': 'var(--mauve)',
+                        'ctp-red': 'var(--red)', 'ctp-green': 'var(--green)',
+                        'ctp-teal': 'var(--teal)', 'ctp-sky': 'var(--sky)',
+                        'ctp-blue': 'var(--blue)', 'ctp-text': 'var(--text)',
+                        'ctp-subtext1': 'var(--subtext1)', 'ctp-subtext0': 'var(--subtext0)',
+                        'ctp-surface2': 'var(--surface2)', 'ctp-surface1': 'var(--surface1)',
+                        'ctp-surface0': 'var(--surface0)', 'ctp-base': 'var(--base)',
+                        'ctp-mantle': 'var(--mantle)', 'ctp-crust': 'var(--crust)',
+                        'ctp-sapphire': 'var(--sapphire)', 'ctp-overlay0': 'var(--overlay0)',
+                    },
+                    borderRadius: { 'pill': '100px' }
+                }
+            }
+        }
+    </script>
 </head>
-<body class="h-screen select-none">
+<body class="bg-ctp-base text-ctp-text h-screen select-none">
 
     <div class="flex h-full w-full">
-        <aside class="w-64 bg-ctp-mantle flex flex-col border-r border-ctp-crust">
+        <!-- Sidebar -->
+        <aside class="w-64 bg-ctp-mantle flex flex-col">
             <div class="p-6 pb-2">
                 <div class="flex items-center gap-3 mb-8">
                     <div class="w-10 h-10 bg-ctp-mauve rounded-xl flex items-center justify-center">
-                        <i class="fas fa-ghost text-ctp-base text-xl"></i>
+                        <i class="fas fa-cubes text-ctp-base text-xl"></i>
                     </div>
-                    <h1 class="text-xl font-bold tracking-tight">Bunshin</h1>
+                    <h1 class="text-xl font-bold tracking-tight text-ctp-text">Bunshin</h1>
                 </div>
-                <div class="relative">
-                    <input type="text" placeholder="Jump to stack..." class="w-full bg-ctp-crust border-none pill py-2.5 pl-10 pr-4 text-sm focus:ring-1 focus:ring-ctp-mauve transition-all">
+                <div class="relative group">
+                    <input type="text" placeholder="Jump to stack..."
+                           class="w-full bg-ctp-crust border-none rounded-pill py-2.5 pl-10 pr-4 text-sm focus:ring-1 focus:ring-ctp-mauve transition-all placeholder-ctp-overlay0">
                     <i class="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-xs text-ctp-overlay0"></i>
                 </div>
             </div>
@@ -67,66 +147,81 @@
             </nav>
 
             <div class="p-6 bg-ctp-crust/30">
-                <button onclick="createNewStack()" class="w-full bg-ctp-surface0 text-sm font-bold py-3 px-4 pill hover:bg-ctp-surface1 flex items-center justify-center gap-2 transition-all">
+                <button onclick="createNewStack()" class="w-full bg-ctp-surface0 text-ctp-text text-sm font-bold py-3 px-4 rounded-pill hover:bg-ctp-surface1 flex items-center justify-center gap-2">
                     <i class="fas fa-plus-circle text-ctp-mauve"></i> New Stack
                 </button>
             </div>
         </aside>
 
+        <!-- Main Content -->
         <main class="flex-1 flex flex-col bg-ctp-base overflow-hidden">
-            <header class="h-20 flex items-center justify-between px-8 flex-shrink-0 border-b border-ctp-crust">
+            <header class="h-20 flex items-center justify-between px-8 flex-shrink-0">
                 <div id="header-info" class="invisible">
-                    <h2 id="current-stack-title" class="text-xl font-bold leading-tight">...</h2>
-                    <div class="flex items-center gap-2 mt-0.5">
-                        <span id="status-dot" class="w-2 h-2 rounded-full bg-ctp-surface2"></span>
-                        <span id="status-text" class="text-[11px] text-ctp-subtext0 font-bold uppercase tracking-wider">Loading</span>
+                    <div>
+                        <h2 id="current-stack-title" class="text-xl font-bold text-ctp-text leading-tight"></h2>
+                        <div class="flex items-center gap-2 mt-0.5">
+                            <span id="status-dot" class="w-2 h-2 bg-ctp-surface2 rounded-full"></span>
+                            <span id="status-text" class="text-[11px] text-ctp-subtext0 font-bold uppercase tracking-wider">Loading</span>
+                        </div>
                     </div>
                 </div>
 
-                <div id="tabs-container" class="invisible flex bg-ctp-mantle p-1.5 pill gap-1">
-                    <button onclick="switchTab('stack')" id="tab-stack" class="px-6 py-1.5 pill text-xs font-bold transition-all tab-active">STACK</button>
-                    <button onclick="switchTab('logs')" id="tab-logs" class="px-6 py-1.5 pill text-xs font-bold transition-all text-ctp-subtext0 hover:bg-ctp-surface1">LOGS</button>
-                    <button onclick="switchTab('shell')" id="tab-shell" class="px-6 py-1.5 pill text-xs font-bold transition-all text-ctp-subtext0 hover:bg-ctp-surface1">SHELL</button>
+                <div id="tabs-container" class="invisible flex bg-ctp-mantle p-1.5 rounded-pill gap-1">
+                    <button id="tab-stack" onclick="switchTab('stack')" class="px-6 py-1.5 rounded-pill text-xs font-bold transition-all tab-active">STACK</button>
+                    <button id="tab-logs" onclick="switchTab('logs')" class="px-6 py-1.5 rounded-pill text-xs font-bold transition-all text-ctp-subtext0 hover:bg-ctp-surface1">LOGS</button>
+                    <button id="tab-shell" onclick="switchTab('shell')" class="px-6 py-1.5 rounded-pill text-xs font-bold transition-all text-ctp-subtext0 hover:bg-ctp-surface1">SHELL</button>
                 </div>
 
                 <div id="actions-container" class="invisible flex items-center gap-2">
-                    <button onclick="saveStack()" class="bg-ctp-blue/10 text-ctp-blue hover:bg-ctp-blue hover:text-ctp-base px-6 py-2 pill text-xs font-bold transition-all flex items-center gap-2">
+                    <button onclick="saveStack()" class="bg-ctp-blue/10 text-ctp-blue hover:bg-ctp-blue hover:text-ctp-base px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2">
                         <i class="fas fa-save text-[10px]"></i> SAVE
                     </button>
-                    <button id="toggle-btn" onclick="toggleStack()" class="bg-ctp-green/10 text-ctp-green hover:bg-ctp-green hover:text-ctp-base px-6 py-2 pill text-xs font-bold transition-all flex items-center gap-2">
+                    <button id="toggle-btn" onclick="toggleStack()" class="bg-ctp-green/10 text-ctp-green hover:bg-ctp-green hover:text-ctp-base px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2">
                         <i class="fas fa-play text-[10px]"></i> START
                     </button>
-                    <button onclick="performAction('update')" class="bg-ctp-sapphire/10 text-ctp-sapphire hover:bg-ctp-sapphire hover:text-ctp-base px-6 py-2 pill text-xs font-bold transition-all flex items-center gap-2">
+                    <button onclick="performAction('update')" class="bg-ctp-sapphire/10 text-ctp-sapphire hover:bg-ctp-sapphire hover:text-ctp-base px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2">
                         <i class="fas fa-sync-alt text-[10px]"></i> UPDATE
                     </button>
                 </div>
             </header>
 
-            <div class="flex-grow p-6 flex flex-col overflow-hidden">
+            <div class="flex-grow p-6 pt-0 pb-6 flex flex-col overflow-hidden">
+
+                <!-- Pane: Stack -->
                 <div id="pane-stack" class="flex-grow flex flex-row gap-4 h-full">
-                    <div class="flex-1 flex flex-col bg-ctp-mantle rounded-3xl overflow-hidden border border-ctp-surface0">
-                        <div class="p-4 border-b border-ctp-surface0 flex items-center gap-2 text-ctp-blue">
-                            <i class="fab fa-docker"></i>
-                            <span class="text-[10px] font-bold uppercase tracking-widest">docker-compose.yml</span>
+                    <!-- YAML Pane -->
+                    <div class="flex-1 flex flex-col p-6 bg-ctp-mantle rounded-3xl overflow-hidden">
+                        <div class="flex items-center justify-between mb-4 flex-shrink-0">
+                            <div class="flex items-center gap-2 text-ctp-blue">
+                                <i class="fab fa-docker"></i>
+                                <span class="text-[10px] font-bold uppercase tracking-widest">docker-compose.yml</span>
+                            </div>
                         </div>
                         <div class="editor-container">
                             <textarea id="yaml-input" class="code-input no-scrollbar" spellcheck="false" oninput="updateHighlight('yaml')"></textarea>
-                            <pre class="code-output no-scrollbar hljs"><code id="yaml-output-block"></code></pre>
+                            <pre id="yaml-output-pre" class="code-output no-scrollbar hljs"><code id="yaml-output-block"></code></pre>
                         </div>
                     </div>
-                    <div class="flex-1 flex flex-col bg-ctp-mantle rounded-3xl overflow-hidden border border-ctp-surface0">
-                        <div class="p-4 border-b border-ctp-surface0 flex items-center gap-2 text-ctp-teal">
-                            <i class="fas fa-key"></i>
-                            <span class="text-[10px] font-bold uppercase tracking-widest">.env variables</span>
+
+                    <!-- ENV Pane -->
+                    <div class="flex-1 flex flex-col p-6 bg-ctp-mantle rounded-3xl overflow-hidden">
+                        <div class="flex items-center justify-between mb-4 flex-shrink-0">
+                            <div class="flex items-center gap-2 text-ctp-teal">
+                                <i class="fas fa-key"></i>
+                                <span class="text-[10px] font-bold uppercase tracking-widest">.env variables</span>
+                            </div>
                         </div>
                         <div class="editor-container">
                             <textarea id="env-input" class="code-input no-scrollbar" spellcheck="false" oninput="updateHighlight('env')"></textarea>
-                            <pre class="code-output no-scrollbar hljs"><code id="env-output-block"></code></pre>
+                            <pre id="env-output-pre" class="code-output no-scrollbar hljs"><code id="env-output-block"></code></pre>
                         </div>
                     </div>
                 </div>
 
-                <div id="pane-logs" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-y-auto no-scrollbar font-mono text-[12px] text-ctp-subtext0 leading-relaxed"></div>
+                <!-- Pane: Logs (Direct Single Div in Crust Color) -->
+                <div id="pane-logs" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-y-auto no-scrollbar mono text-[12px] leading-relaxed text-ctp-subtext0"></div>
+
+                <!-- Pane: Shell (Direct Single Div in Crust Color) -->
                 <div id="pane-shell" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-hidden">
                     <div id="terminal" class="h-full w-full"></div>
                 </div>
@@ -134,6 +229,44 @@
         </main>
     </div>
 
-    <script src="static/app.js"></script>
+    <!-- Modal for New Stack -->
+    <div id="new-stack-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onclick="if(event.target === this) cancelNewStack()">
+        <div class="bg-ctp-mantle rounded-3xl p-8 w-full max-w-md shadow-2xl border border-ctp-surface0">
+            <div class="flex items-center gap-3 mb-6">
+                <div class="w-12 h-12 bg-ctp-mauve/20 rounded-2xl flex items-center justify-center">
+                    <i class="fas fa-layer-group text-ctp-mauve text-xl"></i>
+                </div>
+                <h3 class="text-2xl font-bold text-ctp-text">Create New Stack</h3>
+            </div>
+            
+            <p class="text-ctp-subtext0 text-sm mb-6">Enter a unique name for your Docker Compose stack.</p>
+            
+            <div class="mb-6">
+                <label class="block text-ctp-subtext1 text-xs font-bold uppercase tracking-wider mb-2">Stack Name</label>
+                <input 
+                    id="new-stack-name" 
+                    type="text" 
+                    placeholder="my-awesome-stack"
+                    class="w-full bg-ctp-crust border-2 border-ctp-surface0 focus:border-ctp-mauve rounded-xl py-3 px-4 text-ctp-text placeholder-ctp-overlay0 outline-none transition-all"
+                    autofocus
+                />
+            </div>
+            
+            <div class="flex gap-3">
+                <button 
+                    onclick="cancelNewStack()" 
+                    class="flex-1 bg-ctp-surface0 text-ctp-subtext1 hover:bg-ctp-surface1 hover:text-ctp-text py-3 px-6 rounded-pill text-sm font-bold transition-all">
+                    Cancel
+                </button>
+                <button 
+                    onclick="confirmNewStack()" 
+                    class="flex-1 bg-ctp-mauve text-ctp-base hover:bg-ctp-mauve/90 py-3 px-6 rounded-pill text-sm font-bold transition-all flex items-center justify-center gap-2">
+                    <i class="fas fa-plus-circle"></i> Create
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
 </body>
 </html>
