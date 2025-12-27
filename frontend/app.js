@@ -9,7 +9,7 @@ async function loadStacks() {
     const stacks = await res.json();
     const list = document.getElementById('stack-list');
     
-    list.innerHTML = '<div class="text-[10px] uppercase tracking-widest text-ctp-overlay0 font-bold px-4 mb-2">My Stacks</div>';
+    list.innerHTML = '';
     
     stacks.forEach(s => {
         const btn = document.createElement('button');

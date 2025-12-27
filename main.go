@@ -174,7 +174,6 @@ func handleStatus(cli *client.Client) http.HandlerFunc {
 		if len(containers) > 0 {
 			status = "Operational"
 		}
-		log.Printf("[API] Status check for stack '%s': %s (%d container(s))", name, status, len(containers))
 		fmt.Fprint(w, status)
 	}
 }
