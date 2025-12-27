@@ -54,14 +54,13 @@ async function selectStack(name) {
 function updateHighlight(id) {
     const input = document.getElementById(`${id}-input`);
     const outputBlock = document.getElementById(`${id}-output-block`);
-    const outputPre = document.getElementById(`${id}-output-pre`);
-    if (!input || !outputBlock || !outputPre) return;
+    if (!input || !outputBlock) return;
 
     let content = input.value;
 
     // Sync scrolling
-    outputPre.scrollTop = input.scrollTop;
-    outputPre.scrollLeft = input.scrollLeft;
+    outputBlock.parentElement.scrollTop = input.scrollTop;
+    outputBlock.parentElement.scrollLeft = input.scrollLeft;
 
     const lang = id === 'yaml' ? 'yaml' : 'ini';
     const highlighted = hljs.highlight(content, { language: lang }).value;
@@ -120,13 +119,46 @@ async function updateStatus() {
 }
 
 async function saveStack() {
-    const yaml = document.getElementById('yaml-input').value;
-    const env = document.getElementById('env-input').value;
-    await fetch('/api/stack/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: currentStack, yaml, env })
-    });
+    if (!currentStack) return;
+    
+    const btn = document.getElementById('save-btn');
+    const originalContent = btn.innerHTML;
+    const originalClass = btn.className;
+    
+    // Show loading state
+    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin text-[10px]"></i> SAVING';
+    btn.className = "bg-ctp-blue/10 text-ctp-blue px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2";
+    
+    try {
+        const yaml = document.getElementById('yaml-input').value;
+        const env = document.getElementById('env-input').value;
+        const res = await fetch('/api/stack/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: currentStack, yaml, env })
+        });
+        
+        if (!res.ok) {
+            throw new Error(`Save failed: ${res.status} ${res.statusText}`);
+        }
+        
+        // Show success state
+        btn.innerHTML = '<i class="fas fa-check text-[10px]"></i> DONE';
+        btn.className = "bg-ctp-green/10 text-ctp-green px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2";
+        
+        // Revert to original after 2 seconds
+        setTimeout(() => {
+            btn.innerHTML = originalContent;
+            btn.className = originalClass;
+        }, 2000);
+    } catch (error) {
+        // Show error alert
+        alert(`Failed to save stack: ${error.message}`);
+        
+        // Revert to original state
+        btn.innerHTML = originalContent;
+        btn.className = originalClass;
+    }
 }
 
 async function performAction(action) {

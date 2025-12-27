@@ -117,6 +117,7 @@ func decrypt(data []byte) ([]byte, error) {
 // --- API Handlers ---
 
 func handleListStacks(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[API] Listing stacks from %s/stacks", dataPath)
 	files, _ := os.ReadDir(filepath.Join(dataPath, "stacks"))
 	stacks := []string{}
 	for _, f := range files {
@@ -124,16 +125,22 @@ func handleListStacks(w http.ResponseWriter, r *http.Request) {
 			stacks = append(stacks, strings.TrimSuffix(f.Name(), ".yml"))
 		}
 	}
+	log.Printf("[API] Found %d stack(s)", len(stacks))
 	json.NewEncoder(w).Encode(stacks)
 }
 
 func handleGetStack(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
-	yml, _ := os.ReadFile(filepath.Join(dataPath, "stacks", name+".yml"))
+	log.Printf("[API] Loading stack '%s'", name)
+	yml, err := os.ReadFile(filepath.Join(dataPath, "stacks", name+".yml"))
+	if err != nil {
+		log.Printf("[API] Error reading stack '%s': %v", name, err)
+	}
 	var envStr string
 	if enc, err := os.ReadFile(filepath.Join(dataPath, "env", name+".env")); err == nil {
 		dec, _ := decrypt(enc)
 		envStr = string(dec)
+		log.Printf("[API] Loaded encrypted environment for stack '%s'", name)
 	}
 	json.NewEncoder(w).Encode(map[string]string{"yaml": string(yml), "env": envStr})
 }
@@ -141,11 +148,20 @@ func handleGetStack(w http.ResponseWriter, r *http.Request) {
 func handleSaveStack(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Name, YAML, Env string }
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("[API] Error decoding save request: %v", err)
 		return
 	}
-	os.WriteFile(filepath.Join(dataPath, "stacks", req.Name+".yml"), []byte(req.YAML), 0644)
+	log.Printf("[API] Saving stack '%s'", req.Name)
+	if err := os.WriteFile(filepath.Join(dataPath, "stacks", req.Name+".yml"), []byte(req.YAML), 0644); err != nil {
+		log.Printf("[API] Error writing stack file '%s': %v", req.Name, err)
+		return
+	}
 	enc, _ := encrypt([]byte(req.Env))
-	os.WriteFile(filepath.Join(dataPath, "env", req.Name+".env"), enc, 0644)
+	if err := os.WriteFile(filepath.Join(dataPath, "env", req.Name+".env"), enc, 0644); err != nil {
+		log.Printf("[API] Error writing env file '%s': %v", req.Name, err)
+		return
+	}
+	log.Printf("[API] Successfully saved stack '%s'", req.Name)
 }
 
 func handleStatus(cli *client.Client) http.HandlerFunc {
@@ -154,11 +170,12 @@ func handleStatus(cli *client.Client) http.HandlerFunc {
 		f := filters.NewArgs()
 		f.Add("label", "bunshin.stack="+name)
 		containers, _ := cli.ContainerList(context.Background(), container.ListOptions{Filters: f})
+		status := "Stopped"
 		if len(containers) > 0 {
-			fmt.Fprint(w, "Operational")
-		} else {
-			fmt.Fprint(w, "Stopped")
+			status = "Operational"
 		}
+		log.Printf("[API] Status check for stack '%s': %s (%d container(s))", name, status, len(containers))
+		fmt.Fprint(w, status)
 	}
 }
 
@@ -168,26 +185,57 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 		action := r.URL.Query().Get("action")
 		ctx := context.Background()
 
+		log.Printf("[ACTION] Stack '%s' - executing action: %s", name, action)
+
 		f := filters.NewArgs()
 		f.Add("label", "bunshin.stack="+name)
 
 		if action == "stop" {
+			log.Printf("[STOP] Stopping stack '%s'", name)
 			containers, _ := cli.ContainerList(ctx, container.ListOptions{Filters: f, All: true})
+			log.Printf("[STOP] Found %d container(s) to stop for stack '%s'", len(containers), name)
 			for _, c := range containers {
-				cli.ContainerStop(ctx, c.ID, container.StopOptions{})
-				cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
+				log.Printf("[STOP] Stopping container '%s' (ID: %s)", c.Names[0], c.ID[:12])
+				if err := cli.ContainerStop(ctx, c.ID, container.StopOptions{}); err != nil {
+					log.Printf("[STOP] Error stopping container '%s': %v", c.Names[0], err)
+				}
+				log.Printf("[STOP] Removing container '%s'", c.Names[0])
+				if err := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+					log.Printf("[STOP] Error removing container '%s': %v", c.Names[0], err)
+				} else {
+					log.Printf("[STOP] Successfully removed container '%s'", c.Names[0])
+				}
 			}
+			log.Printf("[STOP] Stack '%s' stopped successfully", name)
 		} else {
-			ymlData, _ := os.ReadFile(filepath.Join(dataPath, "stacks", name+".yml"))
+			ymlData, err := os.ReadFile(filepath.Join(dataPath, "stacks", name+".yml"))
+			if err != nil {
+				log.Printf("[START] Error reading stack file '%s': %v", name, err)
+				w.WriteHeader(500)
+				return
+			}
 			var comp ComposeSchema
-			yaml.Unmarshal(ymlData, &comp)
+			if err := yaml.Unmarshal(ymlData, &comp); err != nil {
+				log.Printf("[START] Error parsing YAML for stack '%s': %v", name, err)
+				w.WriteHeader(500)
+				return
+			}
+
+			log.Printf("[START] Starting stack '%s' with %d service(s)", name, len(comp.Services))
 
 			for svcName, svc := range comp.Services {
+				log.Printf("[SERVICE] Processing service '%s' from stack '%s'", svcName, name)
+				log.Printf("[SERVICE] Image: %s", svc.Image)
+
 				if action == "update" {
+					log.Printf("[UPDATE] Pulling latest image for '%s'", svc.Image)
 					out, err := cli.ImagePull(ctx, svc.Image, image.PullOptions{})
-					if err == nil {
+					if err != nil {
+						log.Printf("[UPDATE] Error pulling image '%s': %v", svc.Image, err)
+					} else {
 						io.Copy(io.Discard, out)
 						out.Close()
+						log.Printf("[UPDATE] Successfully pulled image '%s'", svc.Image)
 					}
 				}
 
@@ -195,6 +243,7 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 				if cName == "" {
 					cName = name + "_" + svcName
 				}
+				log.Printf("[SERVICE] Container name: %s", cName)
 
 				// Manual Port Mapping
 				portMap := nat.PortMap{}
@@ -205,7 +254,27 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 						port := nat.Port(parts[1] + "/tcp")
 						exposedPorts[port] = struct{}{}
 						portMap[port] = []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: parts[0]}}
+						log.Printf("[SERVICE] Mapping port %s:%s", parts[0], parts[1])
 					}
+				}
+
+				// Log volumes
+				if len(svc.Volumes) > 0 {
+					log.Printf("[SERVICE] Mounting %d volume(s)", len(svc.Volumes))
+					for _, vol := range svc.Volumes {
+						log.Printf("[SERVICE]   - %s", vol)
+					}
+				}
+
+				// Log network configuration
+				networkMode := svc.NetworkMode
+				if networkMode == "" && len(svc.Networks) > 0 {
+					networkMode = svc.Networks[0]
+					log.Printf("[SERVICE] Using network: %s (from networks list)", networkMode)
+				} else if networkMode != "" {
+					log.Printf("[SERVICE] Using network_mode: %s", networkMode)
+				} else {
+					log.Printf("[SERVICE] Using default bridge network")
 				}
 
 				config := &container.Config{
@@ -218,30 +287,41 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 				hostConfig := &container.HostConfig{
 					Binds:         svc.Volumes,
 					PortBindings:  portMap,
-					NetworkMode:   container.NetworkMode(svc.NetworkMode),
+					NetworkMode:   container.NetworkMode(networkMode),
 					RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 				}
 
-				// Dumb network handling: use the first specified network if no mode is set
-				if hostConfig.NetworkMode == "" && len(svc.Networks) > 0 {
-					hostConfig.NetworkMode = container.NetworkMode(svc.Networks[0])
-				}
-
 				// Always attempt removal before start to ensure fresh state
+				log.Printf("[SERVICE] Removing existing container '%s' if present", cName)
 				cli.ContainerRemove(ctx, cName, container.RemoveOptions{Force: true})
+
+				log.Printf("[SERVICE] Creating container '%s'", cName)
 				resp, err := cli.ContainerCreate(ctx, config, hostConfig, nil, nil, cName)
 				if err != nil {
-					log.Printf("Create error for %s: %v", cName, err)
+					log.Printf("[ERROR] Failed to create container '%s': %v", cName, err)
 					continue
 				}
-				cli.ContainerStart(ctx, resp.ID, container.StartOptions{})
+				log.Printf("[SERVICE] Starting container '%s' (ID: %s)", cName, resp.ID[:12])
+				if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+					log.Printf("[ERROR] Failed to start container '%s': %v", cName, err)
+				} else {
+					log.Printf("[SERVICE] Successfully started container '%s'", cName)
+				}
 			}
 
 			if action == "update" {
+				log.Printf("[UPDATE] Pruning dangling images for stack '%s'", name)
 				pf := filters.NewArgs()
 				pf.Add("dangling", "true")
-				cli.ImagesPrune(ctx, pf)
+				pruneReport, err := cli.ImagesPrune(ctx, pf)
+				if err != nil {
+					log.Printf("[UPDATE] Error pruning images: %v", err)
+				} else {
+					log.Printf("[UPDATE] Reclaimed %d bytes from dangling images", pruneReport.SpaceReclaimed)
+				}
 			}
+
+			log.Printf("[ACTION] Stack '%s' action '%s' completed successfully", name, action)
 		}
 		w.WriteHeader(200)
 	}
@@ -249,18 +329,28 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 
 func handleLogs(cli *client.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		conn, _ := upgrader.Upgrade(w, r, nil)
-		defer conn.Close()
 		name := r.URL.Query().Get("name")
+		log.Printf("[LOGS] WebSocket connection requested for stack '%s'", name)
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("[LOGS] Error upgrading connection: %v", err)
+			return
+		}
+		defer conn.Close()
+
 		f := filters.NewArgs()
 		f.Add("label", "bunshin.stack="+name)
 		containers, _ := cli.ContainerList(context.Background(), container.ListOptions{Filters: f})
 		if len(containers) == 0 {
+			log.Printf("[LOGS] No containers found for stack '%s'", name)
 			return
 		}
 
+		log.Printf("[LOGS] Streaming logs for container '%s' (ID: %s)", containers[0].Names[0], containers[0].ID[:12])
 		logs, err := cli.ContainerLogs(context.Background(), containers[0].ID, container.LogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Tail: "200"})
 		if err != nil {
+			log.Printf("[LOGS] Error getting container logs: %v", err)
 			return
 		}
 		defer logs.Close()
@@ -268,6 +358,7 @@ func handleLogs(cli *client.Client) http.HandlerFunc {
 		hdr := make([]byte, 8)
 		for {
 			if _, err := logs.Read(hdr); err != nil {
+				log.Printf("[LOGS] Log stream ended for stack '%s': %v", name, err)
 				break
 			}
 			size := uint32(hdr[4])<<24 | uint32(hdr[5])<<16 | uint32(hdr[6])<<8 | uint32(hdr[7])
@@ -280,32 +371,46 @@ func handleLogs(cli *client.Client) http.HandlerFunc {
 
 func handleShell(cli *client.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		conn, _ := upgrader.Upgrade(w, r, nil)
-		defer conn.Close()
 		name := r.URL.Query().Get("name")
+		log.Printf("[SHELL] WebSocket connection requested for stack '%s'", name)
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("[SHELL] Error upgrading connection: %v", err)
+			return
+		}
+		defer conn.Close()
+
 		f := filters.NewArgs()
 		f.Add("label", "bunshin.stack="+name)
 		containers, _ := cli.ContainerList(context.Background(), container.ListOptions{Filters: f})
 		if len(containers) == 0 {
+			log.Printf("[SHELL] No containers found for stack '%s'", name)
 			return
 		}
 
+		log.Printf("[SHELL] Opening shell in container '%s' (ID: %s)", containers[0].Names[0], containers[0].ID[:12])
 		exec, err := cli.ContainerExecCreate(context.Background(), containers[0].ID, container.ExecOptions{
 			AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: true, Cmd: []string{"/bin/sh"},
 		})
 		if err != nil {
+			log.Printf("[SHELL] Error creating exec session: %v", err)
 			return
 		}
 		resp, err := cli.ContainerExecAttach(context.Background(), exec.ID, container.ExecStartOptions{Tty: true})
 		if err != nil {
+			log.Printf("[SHELL] Error attaching to exec session: %v", err)
 			return
 		}
 		defer resp.Close()
+
+		log.Printf("[SHELL] Shell session established for stack '%s'", name)
 
 		go func() {
 			for {
 				_, msg, err := conn.ReadMessage()
 				if err != nil {
+					log.Printf("[SHELL] WebSocket read error: %v", err)
 					return
 				}
 				resp.Conn.Write(msg)
@@ -316,6 +421,7 @@ func handleShell(cli *client.Client) http.HandlerFunc {
 		for {
 			n, err := resp.Reader.Read(buf)
 			if err != nil {
+				log.Printf("[SHELL] Shell session ended for stack '%s': %v", name, err)
 				return
 			}
 			conn.WriteMessage(websocket.TextMessage, buf[:n])

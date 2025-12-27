@@ -77,6 +77,9 @@
             white-space: pre;
             overflow: auto;
             tab-size: 2;
+            box-sizing: border-box;
+            letter-spacing: 0;
+            word-spacing: 0;
         }
 
         /* Textarea overlay */
@@ -86,6 +89,8 @@
             caret-color: var(--text);
             background: transparent !important;
             resize: none;
+            text-rendering: optimizeLegibility;
+            vertical-align: baseline;
         }
 
         /* Highlight container */
@@ -95,10 +100,27 @@
             background: transparent !important;
         }
 
+        /* Ensure code element inside pre matches textarea exactly */
+        .code-output code {
+            display: block;
+            margin: 0;
+            padding: 0;
+            font-family: 'JetBrains Mono', monospace !important;
+            font-size: 13px;
+            line-height: 1.6;
+            white-space: pre;
+            tab-size: 2;
+            box-sizing: border-box;
+            letter-spacing: 0;
+            word-spacing: 0;
+            text-rendering: optimizeLegibility;
+        }
+
         /* Ensure HLJS doesn't force its own background */
         .hljs {
             background: transparent !important;
             padding: 0 !important;
+            margin: 0 !important;
         }
     </style>
 
@@ -173,7 +195,7 @@
                 </div>
 
                 <div id="actions-container" class="invisible flex items-center gap-2">
-                    <button onclick="saveStack()" class="bg-ctp-blue/10 text-ctp-blue hover:bg-ctp-blue hover:text-ctp-base px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2">
+                    <button id="save-btn" onclick="saveStack()" class="bg-ctp-blue/10 text-ctp-blue hover:bg-ctp-blue hover:text-ctp-base px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2">
                         <i class="fas fa-save text-[10px]"></i> SAVE
                     </button>
                     <button id="toggle-btn" onclick="toggleStack()" class="bg-ctp-green/10 text-ctp-green hover:bg-ctp-green hover:text-ctp-base px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2">
@@ -219,7 +241,7 @@
                 </div>
 
                 <!-- Pane: Logs (Direct Single Div in Crust Color) -->
-                <div id="pane-logs" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-y-auto no-scrollbar mono text-[12px] leading-relaxed text-ctp-subtext0"></div>
+                <div id="pane-logs" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-y-auto no-scrollbar mono text-[12px] leading-relaxed text-ctp-subtext0 select-text"></div>
 
                 <!-- Pane: Shell (Direct Single Div in Crust Color) -->
                 <div id="pane-shell" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-hidden">
