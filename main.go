@@ -15,21 +15,17 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
-	"regexp"
-
-	"github.com/docker/docker/api/types"
+	"github.com/compose-spec/compose-go/v2/loader"
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
-	"github.com/goccy/go-yaml"
-	"github.com/google/shlex"
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -44,23 +40,6 @@ var (
 	dataPath string
 	envKey   []byte
 )
-
-// ComposeSchema reflects a "dumb" mapping.
-// It doesn't orchestrate networks/volumes, just uses what's provided.
-type ComposeSchema struct {
-	Services map[string]struct {
-		Image           string   `yaml:"image"`
-		Container       string   `yaml:"container_name"`
-		Command         string   `yaml:"command"`
-		Environment     []string `yaml:"environment"`
-		Volumes         []string `yaml:"volumes"`
-		Ports           []string `yaml:"ports"`
-		Networks        []string `yaml:"networks"`
-		NetworkMode     string   `yaml:"network_mode"`
-		DeploymentOrder int      `yaml:"deployment_order"`
-		CapAdd          []string `yaml:"cap_add"`
-	} `yaml:"services"`
-}
 
 func main() {
 	dataPath = "./data"
@@ -145,43 +124,6 @@ func parseEnvFile(envContent string) map[string]string {
 		}
 	}
 	return envMap
-}
-
-func substituteEnvVars(s string, envMap map[string]string) string {
-	result := s
-	varSubst := regexp.MustCompile(`\$\{([^}]+)\}`)
-	result = varSubst.ReplaceAllStringFunc(result, func(match string) string {
-		varName := match[2 : len(match)-1]
-		// Handle ${VAR:-default} syntax
-		if strings.Contains(varName, ":-") {
-			parts := strings.SplitN(varName, ":-", 2)
-			varName = strings.TrimSpace(parts[0])
-			defaultVal := strings.TrimSpace(parts[1])
-			if val, ok := envMap[varName]; ok && val != "" {
-				return val
-			}
-			return defaultVal
-		}
-		if val, ok := envMap[varName]; ok {
-			return val
-		}
-		if val := os.Getenv(varName); val != "" {
-			return val
-		}
-		return match // Return original if not found
-	})
-	simpleVarSubst := regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
-	result = simpleVarSubst.ReplaceAllStringFunc(result, func(match string) string {
-		varName := match[1:]
-		if val, ok := envMap[varName]; ok {
-			return val
-		}
-		if val := os.Getenv(varName); val != "" {
-			return val
-		}
-		return match // Return original if not found
-	})
-	return result
 }
 
 // --- Network Helpers ---
@@ -305,6 +247,80 @@ func handleStatus(cli *client.Client) http.HandlerFunc {
 	}
 }
 
+func getContainerInstanceNumber(ctx context.Context, cli *client.Client, stackName, serviceName string) int {
+	f := filters.NewArgs()
+	f.Add("label", "bunshin.stack="+stackName)
+	f.Add("label", "bunshin.service="+serviceName)
+	containers, _ := cli.ContainerList(ctx, container.ListOptions{Filters: f, All: true})
+	return len(containers) + 1
+}
+
+func findService(project *types.Project, serviceName string) *types.ServiceConfig {
+	for i := range project.Services {
+		if project.Services[i].Name == serviceName {
+			svc := project.Services[i]
+			return &svc
+		}
+	}
+	return nil
+}
+
+func waitForDependencies(ctx context.Context, cli *client.Client, project *types.Project, stackName string, svc types.ServiceConfig) error {
+	if len(svc.DependsOn) == 0 {
+		return nil
+	}
+
+	log.Printf("[WAIT] Service '%s' waiting for dependencies", svc.Name)
+
+	for depName, condition := range svc.DependsOn {
+		depService := findService(project, depName)
+		if depService == nil {
+			return fmt.Errorf("dependency '%s' not found in project", depName)
+		}
+
+		targetContainerName := depService.ContainerName
+		if targetContainerName == "" {
+			targetContainerName = fmt.Sprintf("%s_%s_1", stackName, depName)
+		}
+
+		timeout := time.After(60 * time.Second)
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		ready := false
+		for !ready {
+			select {
+			case <-timeout:
+				return fmt.Errorf("timeout waiting for dependency '%s'", depName)
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+				inspect, err := cli.ContainerInspect(ctx, targetContainerName)
+				if err != nil {
+					continue
+				}
+
+				switch condition.Condition {
+				case "service_healthy":
+					if inspect.State.Health != nil && inspect.State.Health.Status == "healthy" {
+						ready = true
+					}
+				case "service_completed_successfully":
+					if inspect.State.Status == "exited" && inspect.State.ExitCode == 0 {
+						ready = true
+					}
+				default:
+					if inspect.State.Status == "running" {
+						ready = true
+					}
+				}
+			}
+		}
+		log.Printf("[WAIT] Dependency '%s' is ready", depName)
+	}
+	return nil
+}
+
 func handleAction(cli *client.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
@@ -341,7 +357,6 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 				return
 			}
 
-			// Load and parse environment variables from .env file
 			envMap := make(map[string]string)
 			if enc, err := os.ReadFile(filepath.Join(dataPath, "env", name+".env")); err == nil {
 				dec, err := decrypt(enc)
@@ -355,51 +370,23 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 				log.Printf("[START] No .env file found for stack '%s' (this is okay)", name)
 			}
 
-			// Substitute environment variables in YAML before parsing
-			ymlDataStr := string(ymlData)
-			ymlDataStr = substituteEnvVars(ymlDataStr, envMap)
-			ymlData = []byte(ymlDataStr)
-
-			var comp ComposeSchema
-			if err := yaml.Unmarshal(ymlData, &comp); err != nil {
-				log.Printf("[START] Error parsing YAML for stack '%s': %v", name, err)
+			project, err := loader.LoadWithContext(ctx, types.ConfigDetails{
+				WorkingDir: ".",
+				ConfigFiles: []types.ConfigFile{
+					{Filename: name + ".yml", Content: ymlData},
+				},
+				Environment: envMap,
+			})
+			if err != nil {
+				log.Printf("[START] Error parsing stack '%s': %v", name, err)
 				w.WriteHeader(500)
 				return
 			}
 
-			log.Printf("[START] Starting stack '%s' with %d service(s)", name, len(comp.Services))
+			log.Printf("[START] Starting stack '%s' with %d service(s)", name, len(project.Services))
 
-			type serviceItem struct {
-				name  string
-				order int
-			}
-
-			services := make([]serviceItem, 0, len(comp.Services))
-			for svcName, svc := range comp.Services {
-				services = append(services, serviceItem{name: svcName, order: svc.DeploymentOrder})
-			}
-
-			sort.Slice(services, func(i, j int) bool {
-				return services[i].order < services[j].order
-			})
-
-			var prevContainerName string
-			for idx, item := range services {
-				svcName := item.name
-				svc := comp.Services[svcName]
-
-				if idx > 0 && prevContainerName != "" {
-					for {
-						f := filters.NewArgs()
-						f.Add("name", prevContainerName)
-						containers, _ := cli.ContainerList(ctx, container.ListOptions{Filters: f})
-						if len(containers) > 0 && containers[0].State == "running" {
-							break
-						}
-						time.Sleep(500 * time.Millisecond)
-					}
-				}
-				log.Printf("[SERVICE] Processing service '%s' from stack '%s'", svcName, name)
+			for _, svc := range project.Services {
+				log.Printf("[SERVICE] Processing service '%s' from stack '%s'", svc.Name, name)
 				log.Printf("[SERVICE] Image: %s", svc.Image)
 
 				if action == "update" {
@@ -414,63 +401,84 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 					}
 				}
 
-				cName := svc.Container
+				if err := waitForDependencies(ctx, cli, project, name, svc); err != nil {
+					log.Printf("[ERROR] Dependency check failed for '%s': %v", svc.Name, err)
+					continue
+				}
+
+				cName := svc.ContainerName
 				if cName == "" {
-					cName = name + "_" + svcName
+					instanceNum := getContainerInstanceNumber(ctx, cli, name, svc.Name)
+					cName = fmt.Sprintf("%s_%s_%d", name, svc.Name, instanceNum)
 				}
 				log.Printf("[SERVICE] Container name: %s", cName)
 
-				// Manual Port Mapping
-				portMap := nat.PortMap{}
 				exposedPorts := nat.PortSet{}
+				portBindings := nat.PortMap{}
 				for _, p := range svc.Ports {
-					parts := strings.Split(p, ":")
-					if len(parts) == 2 {
-						port := nat.Port(parts[1] + "/tcp")
-						exposedPorts[port] = struct{}{}
-						portMap[port] = []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: parts[0]}}
-						log.Printf("[SERVICE] Mapping port %s:%s", parts[0], parts[1])
+					protocol := p.Protocol
+					if protocol == "" {
+						protocol = "tcp"
+					}
+					port := nat.Port(fmt.Sprintf("%d/%s", p.Target, protocol))
+					exposedPorts[port] = struct{}{}
+					if p.Published != "" {
+						hostIP := p.HostIP
+						if hostIP == "" {
+							hostIP = "0.0.0.0"
+						}
+						portBindings[port] = []nat.PortBinding{{HostIP: hostIP, HostPort: p.Published}}
+						log.Printf("[SERVICE] Mapping port %s:%d", p.Published, p.Target)
 					}
 				}
 
-				// Log volumes
-				if len(svc.Volumes) > 0 {
-					log.Printf("[SERVICE] Mounting %d volume(s)", len(svc.Volumes))
-					for _, vol := range svc.Volumes {
-						log.Printf("[SERVICE]   - %s", vol)
+				binds := []string{}
+				for _, v := range svc.Volumes {
+					if v.Type == "bind" || v.Type == "" {
+						bind := fmt.Sprintf("%s:%s", v.Source, v.Target)
+						if v.ReadOnly {
+							bind += ":ro"
+						}
+						binds = append(binds, bind)
 					}
 				}
+				if len(binds) > 0 {
+					log.Printf("[SERVICE] Mounting %d volume(s)", len(binds))
+				}
 
-				// Network configuration
-				networkMode := svc.NetworkMode
+				networkMode := ""
 				var networkName string
 				var networkingConfig *network.NetworkingConfig
 
-				if networkMode == "" && len(svc.Networks) > 0 {
-					networkName = svc.Networks[0]
-					log.Printf("[SERVICE] Using network: %s (from networks list)", networkName)
-				} else if networkMode != "" {
+				if svc.NetworkMode != "" {
+					networkMode = svc.NetworkMode
 					specialModes := []string{"host", "bridge", "none"}
 					isSpecialMode := slices.Contains(specialModes, networkMode)
-					// Convert service: to container: for Docker compatibility
 					if after, ok := strings.CutPrefix(networkMode, "service:"); ok {
-						containerName := after
-						networkMode = "container:" + containerName
-						log.Printf("[SERVICE] Converted service:%s to network_mode: %s", containerName, networkMode)
-					}
-					if isSpecialMode || strings.HasPrefix(networkMode, "container:") {
-						log.Printf("[SERVICE] Using network_mode: %s", networkMode)
-					} else {
-						// Treat as named network
+						depService := findService(project, after)
+						if depService != nil && depService.ContainerName != "" {
+							networkMode = "container:" + depService.ContainerName
+						} else {
+							networkMode = fmt.Sprintf("container:%s_%s_1", name, after)
+						}
+						log.Printf("[SERVICE] Resolved network_mode to: %s", networkMode)
+					} else if !isSpecialMode && !strings.HasPrefix(networkMode, "container:") {
 						networkName = networkMode
 						networkMode = ""
 						log.Printf("[SERVICE] Using named network: %s", networkName)
+					} else {
+						log.Printf("[SERVICE] Using network_mode: %s", networkMode)
 					}
+				} else if len(svc.Networks) > 0 {
+					for netName := range svc.Networks {
+						networkName = netName
+						break
+					}
+					log.Printf("[SERVICE] Using network: %s", networkName)
 				} else {
 					log.Printf("[SERVICE] Using default bridge network")
 				}
 
-				// Resolve and validate network if a named network is specified
 				if networkName != "" {
 					resolvedNetwork, err := resolveNetworkName(ctx, cli, networkName)
 					if err != nil {
@@ -486,93 +494,49 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 					log.Printf("[SERVICE] Configured to connect to network '%s'", resolvedNetwork)
 				}
 
-				containerEnv := []string{}
-				for key, value := range envMap {
-					containerEnv = append(containerEnv, key+"="+value)
-				}
-				// add/override with variables from YAML
-				for _, envLine := range svc.Environment {
-					envLine = substituteEnvVars(envLine, envMap)
-					parts := strings.SplitN(envLine, "=", 2)
-					if len(parts) == 2 {
-						key := strings.TrimSpace(parts[0])
-						value := strings.TrimSpace(parts[1])
-						if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
-							value = value[1 : len(value)-1]
-						}
-						found := false
-						for i, existingEnv := range containerEnv {
-							if strings.HasPrefix(existingEnv, key+"=") {
-								containerEnv[i] = key + "=" + value
-								found = true
-								break
-							}
-						}
-						if !found {
-							containerEnv = append(containerEnv, key+"="+value)
-						}
-					} else {
-						key := strings.TrimSpace(envLine)
-						value := ""
-						if val, ok := envMap[key]; ok {
-							value = val
-						} else if val := os.Getenv(key); val != "" {
-							value = val
-						}
-						if value != "" {
-							found := false
-							for i, existingEnv := range containerEnv {
-								if strings.HasPrefix(existingEnv, key+"=") {
-									containerEnv[i] = key + "=" + value
-									found = true
-									break
-								}
-							}
-							if !found {
-								containerEnv = append(containerEnv, key+"="+value)
-							}
-						}
+				envList := []string{}
+				for k, v := range svc.Environment {
+					if v != nil {
+						envList = append(envList, fmt.Sprintf("%s=%s", k, *v))
 					}
 				}
-				if len(containerEnv) > 0 {
-					log.Printf("[SERVICE] Setting %d environment variable(s)", len(containerEnv))
+				if len(envList) > 0 {
+					log.Printf("[SERVICE] Setting %d environment variable(s)", len(envList))
 				}
 
 				var cmdSlice []string
-				if svc.Command != "" {
-					var err error
-					cmdSlice, err = shlex.Split(svc.Command)
-					if err != nil {
-						log.Printf("[ERROR] Failed to parse command for service '%s': %v", svcName, err)
-					}
+				if len(svc.Command) > 0 {
+					cmdSlice = []string(svc.Command)
 				}
 
 				config := &container.Config{
 					Image:        svc.Image,
-					Env:          containerEnv,
 					Cmd:          cmdSlice,
-					Labels:       map[string]string{"bunshin.stack": name, "bunshin.managed": "true"},
+					Env:          envList,
 					ExposedPorts: exposedPorts,
+					Labels:       map[string]string{"bunshin.stack": name, "bunshin.service": svc.Name, "bunshin.managed": "true"},
+				}
+
+				restartPolicy := container.RestartPolicy{}
+				if svc.Restart != "" {
+					restartPolicy.Name = container.RestartPolicyMode(svc.Restart)
 				}
 
 				hostConfig := &container.HostConfig{
-					Binds:         svc.Volumes,
-					PortBindings:  portMap,
-					RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+					Binds:         binds,
+					PortBindings:  portBindings,
+					RestartPolicy: restartPolicy,
+					CapAdd:        svc.CapAdd,
 				}
 
-				// Set NetworkMode only for special modes, not for named networks
 				if networkMode != "" {
 					hostConfig.NetworkMode = container.NetworkMode(networkMode)
 				}
 
-				// Set capabilities if specified
 				if len(svc.CapAdd) > 0 {
-					hostConfig.CapAdd = svc.CapAdd
 					log.Printf("[SERVICE] Adding capabilities: %v", svc.CapAdd)
 				}
 
-				// Always attempt removal before start to ensure fresh state
 				log.Printf("[SERVICE] Removing existing container '%s' if present", cName)
 				cli.ContainerRemove(ctx, cName, container.RemoveOptions{Force: true})
 
@@ -587,7 +551,6 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 					log.Printf("[ERROR] Failed to start container '%s': %v", cName, err)
 				} else {
 					log.Printf("[SERVICE] Successfully started container '%s'", cName)
-					prevContainerName = cName
 				}
 			}
 
@@ -653,7 +616,7 @@ func handleLogs(cli *client.Client) http.HandlerFunc {
 			return
 		}
 
-		var targetContainer *types.Container
+		var targetContainer *container.Summary
 		if containerID != "" {
 			for i := range containers {
 				if containers[i].ID == containerID || strings.HasPrefix(containers[i].ID, containerID) {
@@ -710,7 +673,7 @@ func handleShell(cli *client.Client) http.HandlerFunc {
 			return
 		}
 
-		var targetContainer *types.Container
+		var targetContainer *container.Summary
 		if containerID != "" {
 			for i := range containers {
 				if containers[i].ID == containerID || strings.HasPrefix(containers[i].ID, containerID) {
