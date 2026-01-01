@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/goccy/go-yaml"
@@ -177,6 +179,63 @@ func substituteEnvVars(s string, envMap map[string]string) string {
 		return match // Return original if not found
 	})
 	return result
+}
+
+// --- Network Helpers ---
+
+func resolveNetworkName(ctx context.Context, cli *client.Client, networkName string) (string, error) {
+	specialModes := []string{"host", "bridge", "none"}
+	if slices.Contains(specialModes, networkName) {
+		return networkName, nil
+	}
+	if strings.HasPrefix(networkName, "container:") {
+		return networkName, nil
+	}
+
+	actualNetworkName := networkName
+	if after, ok := strings.CutPrefix(networkName, "service:"); ok {
+		containerName := after
+		log.Printf("[NETWORK] Resolving network for service/container: %s", containerName)
+		// Try to find the container and get its network
+		f := filters.NewArgs()
+		f.Add("name", containerName)
+		containers, err := cli.ContainerList(ctx, container.ListOptions{Filters: f, All: true})
+		if err == nil && len(containers) > 0 {
+			containerJSON, err := cli.ContainerInspect(ctx, containers[0].ID)
+			if err == nil && len(containerJSON.NetworkSettings.Networks) > 0 {
+				for netName := range containerJSON.NetworkSettings.Networks {
+					actualNetworkName = netName
+					log.Printf("[NETWORK] Found network '%s' from container '%s'", actualNetworkName, containerName)
+					break
+				}
+			}
+		}
+		if actualNetworkName == networkName {
+			actualNetworkName = containerName
+			log.Printf("[NETWORK] Trying network name '%s' directly", actualNetworkName)
+		}
+	}
+
+	networks, err := cli.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to list networks: %w", err)
+	}
+	for _, net := range networks {
+		if net.Name == actualNetworkName || net.ID == actualNetworkName {
+			log.Printf("[NETWORK] Network '%s' found (ID: %s)", actualNetworkName, net.ID[:12])
+			return net.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("network '%s' not found. Available networks: %v", actualNetworkName, getNetworkNames(networks))
+}
+
+func getNetworkNames(networks []network.Summary) []string {
+	names := make([]string, 0, len(networks))
+	for _, net := range networks {
+		names = append(names, net.Name)
+	}
+	return names
 }
 
 // --- API Handlers ---
@@ -379,15 +438,43 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 					}
 				}
 
-				// Log network configuration
+				// Network configuration
 				networkMode := svc.NetworkMode
+				var networkName string
+				var networkingConfig *network.NetworkingConfig
+
 				if networkMode == "" && len(svc.Networks) > 0 {
-					networkMode = svc.Networks[0]
-					log.Printf("[SERVICE] Using network: %s (from networks list)", networkMode)
+					networkName = svc.Networks[0]
+					log.Printf("[SERVICE] Using network: %s (from networks list)", networkName)
 				} else if networkMode != "" {
-					log.Printf("[SERVICE] Using network_mode: %s", networkMode)
+					specialModes := []string{"host", "bridge", "none"}
+					isSpecialMode := slices.Contains(specialModes, networkMode)
+					if isSpecialMode || strings.HasPrefix(networkMode, "container:") {
+						log.Printf("[SERVICE] Using network_mode: %s", networkMode)
+					} else {
+						// Treat as named network
+						networkName = networkMode
+						networkMode = ""
+						log.Printf("[SERVICE] Using named network: %s", networkName)
+					}
 				} else {
 					log.Printf("[SERVICE] Using default bridge network")
+				}
+
+				// Resolve and validate network if a named network is specified
+				if networkName != "" {
+					resolvedNetwork, err := resolveNetworkName(ctx, cli, networkName)
+					if err != nil {
+						log.Printf("[ERROR] Failed to resolve network '%s' for container '%s': %v", networkName, cName, err)
+						log.Printf("[ERROR] Skipping container '%s' due to network error", cName)
+						continue
+					}
+					networkingConfig = &network.NetworkingConfig{
+						EndpointsConfig: map[string]*network.EndpointSettings{
+							resolvedNetwork: {},
+						},
+					}
+					log.Printf("[SERVICE] Configured to connect to network '%s'", resolvedNetwork)
 				}
 
 				containerEnv := []string{}
@@ -452,8 +539,12 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 				hostConfig := &container.HostConfig{
 					Binds:         svc.Volumes,
 					PortBindings:  portMap,
-					NetworkMode:   container.NetworkMode(networkMode),
 					RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+				}
+
+				// Set NetworkMode only for special modes, not for named networks
+				if networkMode != "" {
+					hostConfig.NetworkMode = container.NetworkMode(networkMode)
 				}
 
 				// Always attempt removal before start to ensure fresh state
@@ -461,7 +552,7 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 				cli.ContainerRemove(ctx, cName, container.RemoveOptions{Force: true})
 
 				log.Printf("[SERVICE] Creating container '%s'", cName)
-				resp, err := cli.ContainerCreate(ctx, config, hostConfig, nil, nil, cName)
+				resp, err := cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, cName)
 				if err != nil {
 					log.Printf("[ERROR] Failed to create container '%s': %v", cName, err)
 					continue
