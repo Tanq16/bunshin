@@ -65,20 +65,19 @@ func (m *Manager) LoadProject(ctx context.Context, name string) (*types.Project,
 	if err != nil {
 		return nil, err
 	}
-
 	envMap := m.envMgr.GetEnvMap(name)
-
 	project, err := loader.LoadWithContext(ctx, types.ConfigDetails{
 		WorkingDir: ".",
 		ConfigFiles: []types.ConfigFile{
 			{Filename: name + ".yml", Content: ymlData},
 		},
 		Environment: envMap,
+	}, func(opts *loader.Options) {
+		opts.SetProjectName(name, true)
 	})
 	if err != nil {
 		return nil, err
 	}
-
 	return project, nil
 }
 
@@ -92,11 +91,49 @@ func FindService(project *types.Project, serviceName string) *types.ServiceConfi
 	return nil
 }
 
+func SortServicesByDependencies(services types.Services) []types.ServiceConfig {
+	visited := make(map[string]bool)
+	recStack := make(map[string]bool)
+	result := make([]types.ServiceConfig, 0, len(services))
+	var visit func(name string) bool
+	visit = func(name string) bool {
+		if recStack[name] {
+			log.Printf("[WARN] Circular dependency detected involving service '%s'", name)
+			return false
+		}
+		if visited[name] {
+			return true
+		}
+		svc, exists := services[name]
+		if !exists {
+			return true
+		}
+		visited[name] = true
+		recStack[name] = true
+		for depName := range svc.DependsOn {
+			visit(depName)
+		}
+		recStack[name] = false
+		result = append(result, svc)
+		return true
+	}
+	for name := range services {
+		visit(name)
+	}
+	if len(result) > 0 {
+		serviceNames := make([]string, 0, len(result))
+		for _, svc := range result {
+			serviceNames = append(serviceNames, svc.Name)
+		}
+		log.Printf("[SORT] Services sorted by dependencies: %v", serviceNames)
+	}
+	return result
+}
+
 func WaitForDependencies(ctx context.Context, cli *client.Client, project *types.Project, stackName string, svc types.ServiceConfig) error {
 	if len(svc.DependsOn) == 0 {
 		return nil
 	}
-
 	log.Printf("[WAIT] Service '%s' waiting for dependencies", svc.Name)
 
 	for depName, condition := range svc.DependsOn {
@@ -104,12 +141,10 @@ func WaitForDependencies(ctx context.Context, cli *client.Client, project *types
 		if depService == nil {
 			return fmt.Errorf("dependency '%s' not found in project", depName)
 		}
-
 		targetContainerName := depService.ContainerName
 		if targetContainerName == "" {
 			targetContainerName = fmt.Sprintf("%s_%s_1", stackName, depName)
 		}
-
 		timeout := time.After(60 * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
@@ -126,7 +161,6 @@ func WaitForDependencies(ctx context.Context, cli *client.Client, project *types
 				if err != nil {
 					continue
 				}
-
 				switch condition.Condition {
 				case "service_healthy":
 					if inspect.State.Health != nil && inspect.State.Health.Status == "healthy" {

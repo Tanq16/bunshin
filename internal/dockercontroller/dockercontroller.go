@@ -127,7 +127,9 @@ func (c *Controller) StopStack(ctx context.Context, name string) error {
 
 func (c *Controller) StartStack(ctx context.Context, name string, project *types.Project, isUpdate bool) error {
 	log.Printf("[START] Starting stack '%s' with %d service(s)", name, len(project.Services))
-	for _, svc := range project.Services {
+	// Sort services by dependencies so dependencies are started first
+	sortedServices := stackmanager.SortServicesByDependencies(project.Services)
+	for _, svc := range sortedServices {
 		log.Printf("[SERVICE] Processing service '%s' from stack '%s'", svc.Name, name)
 		log.Printf("[SERVICE] Image: %s", svc.Image)
 		if isUpdate {
@@ -186,7 +188,6 @@ func (c *Controller) StartStack(ctx context.Context, name string, project *types
 			log.Printf("[SERVICE] Mounting %d volume(s)", len(binds))
 		}
 		networkMode := ""
-		var networkName string
 		var networkingConfig *network.NetworkingConfig
 
 		if svc.NetworkMode != "" {
@@ -202,35 +203,49 @@ func (c *Controller) StartStack(ctx context.Context, name string, project *types
 				}
 				log.Printf("[SERVICE] Resolved network_mode to: %s", networkMode)
 			} else if !isSpecialMode && !strings.HasPrefix(networkMode, "container:") {
-				networkName = networkMode
+				// Single named network in network_mode
+				resolvedNetwork, err := c.ResolveNetworkName(ctx, networkMode)
+				if err != nil {
+					log.Printf("[ERROR] Failed to resolve network '%s' for container '%s': %v", networkMode, cName, err)
+					log.Printf("[ERROR] Skipping container '%s' due to network error", cName)
+					continue
+				}
+				networkingConfig = &network.NetworkingConfig{
+					EndpointsConfig: map[string]*network.EndpointSettings{
+						resolvedNetwork: {},
+					},
+				}
 				networkMode = ""
-				log.Printf("[SERVICE] Using named network: %s", networkName)
+				log.Printf("[SERVICE] Using named network: %s", resolvedNetwork)
 			} else {
 				log.Printf("[SERVICE] Using network_mode: %s", networkMode)
 			}
 		} else if len(svc.Networks) > 0 {
-			for netName := range svc.Networks {
-				networkName = netName
-				break
-			}
-			log.Printf("[SERVICE] Using network: %s", networkName)
-		} else {
-			log.Printf("[SERVICE] Using default bridge network")
-		}
+			// Handle multiple networks - connect to ALL specified networks
+			endpointsConfig := make(map[string]*network.EndpointSettings)
+			networkNames := make([]string, 0, len(svc.Networks))
 
-		if networkName != "" {
-			resolvedNetwork, err := c.ResolveNetworkName(ctx, networkName)
-			if err != nil {
-				log.Printf("[ERROR] Failed to resolve network '%s' for container '%s': %v", networkName, cName, err)
-				log.Printf("[ERROR] Skipping container '%s' due to network error", cName)
+			for netName := range svc.Networks {
+				resolvedNetwork, err := c.ResolveNetworkName(ctx, netName)
+				if err != nil {
+					log.Printf("[ERROR] Failed to resolve network '%s' for container '%s': %v", netName, cName, err)
+					log.Printf("[ERROR] Skipping container '%s' due to network error", cName)
+					continue
+				}
+				endpointsConfig[resolvedNetwork] = &network.EndpointSettings{}
+				networkNames = append(networkNames, resolvedNetwork)
+			}
+
+			if len(endpointsConfig) == 0 {
+				log.Printf("[ERROR] No valid networks could be resolved for container '%s'", cName)
 				continue
 			}
 			networkingConfig = &network.NetworkingConfig{
-				EndpointsConfig: map[string]*network.EndpointSettings{
-					resolvedNetwork: {},
-				},
+				EndpointsConfig: endpointsConfig,
 			}
-			log.Printf("[SERVICE] Configured to connect to network '%s'", resolvedNetwork)
+			log.Printf("[SERVICE] Configured to connect to %d network(s): %v", len(networkNames), networkNames)
+		} else {
+			log.Printf("[SERVICE] Using default bridge network")
 		}
 
 		envList := []string{}
