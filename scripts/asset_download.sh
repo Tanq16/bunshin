@@ -5,9 +5,9 @@
 
 set -e
 
-CSS_DIR="static/static/css"
-JS_DIR="static/static/js"
-FONTS_DIR="static/static/fonts"
+CSS_DIR="frontend/static/css"
+JS_DIR="frontend/static/js"
+FONTS_DIR="frontend/static/fonts"
 
 echo "Creating directory structure"
 mkdir -p "$CSS_DIR" "$JS_DIR" "$FONTS_DIR"
@@ -42,6 +42,9 @@ curl -sL "https://unpkg.com/@catppuccin/highlightjs@1.0.1/css/catppuccin-mocha.c
 echo "Downloading Xterm.js"
 curl -sL "https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" -o "$CSS_DIR/xterm.css"
 curl -sL "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" -o "$JS_DIR/xterm.min.js"
+
+echo "Downloading ansi_up"
+curl -sL "https://cdn.jsdelivr.net/npm/ansi_up@5.1.0/ansi_up.js" -o "$JS_DIR/ansi_up.js"
 
 echo "Downloading Google Fonts"
 curl -sL "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" -A "Mozilla/5.0" -o "$CSS_DIR/inter.css"

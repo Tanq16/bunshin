@@ -242,12 +242,16 @@ function startLogs() {
     currentLogsContainer = containerID;
     logsContent.innerHTML = '<div class="opacity-50 italic">... attaching to logs</div>';
     
+    // Initialize ANSI to HTML converter
+    const ansiUp = new AnsiUp();
+    
     if (logWs) logWs.close();
-    logWs = new WebSocket(`ws://${window.location.host}/ws/logs?name=${currentStack}&container=${containerID}`);
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    logWs = new WebSocket(`${wsProtocol}//${window.location.host}/ws/logs?name=${currentStack}&container=${containerID}`);
     logWs.onmessage = (e) => {
         const div = document.createElement('div');
         div.className = "mb-1";
-        div.innerText = e.data;
+        div.innerHTML = ansiUp.ansi_to_html(e.data);
         logsContent.appendChild(div);
         logsContent.scrollTop = logsContent.scrollHeight;
     };
@@ -279,7 +283,8 @@ function startShell() {
     term.open(document.getElementById('terminal'));
     
     if (shellWs) shellWs.close();
-    shellWs = new WebSocket(`ws://${window.location.host}/ws/shell?name=${currentStack}&container=${containerID}`);
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    shellWs = new WebSocket(`${wsProtocol}//${window.location.host}/ws/shell?name=${currentStack}&container=${containerID}`);
     shellWs.onmessage = (e) => term.write(e.data);
     shellWs.onerror = () => {
         term.write('\r\nError connecting to shell\r\n');
