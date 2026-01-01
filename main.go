@@ -450,6 +450,12 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 				} else if networkMode != "" {
 					specialModes := []string{"host", "bridge", "none"}
 					isSpecialMode := slices.Contains(specialModes, networkMode)
+					// Convert service: to container: for Docker compatibility
+					if after, ok := strings.CutPrefix(networkMode, "service:"); ok {
+						containerName := after
+						networkMode = "container:" + containerName
+						log.Printf("[SERVICE] Converted service:%s to network_mode: %s", containerName, networkMode)
+					}
 					if isSpecialMode || strings.HasPrefix(networkMode, "container:") {
 						log.Printf("[SERVICE] Using network_mode: %s", networkMode)
 					} else {
