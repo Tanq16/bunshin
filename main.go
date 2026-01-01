@@ -29,6 +29,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/goccy/go-yaml"
+	"github.com/google/shlex"
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -50,6 +51,7 @@ type ComposeSchema struct {
 	Services map[string]struct {
 		Image           string   `yaml:"image"`
 		Container       string   `yaml:"container_name"`
+		Command         string   `yaml:"command"`
 		Environment     []string `yaml:"environment"`
 		Volumes         []string `yaml:"volumes"`
 		Ports           []string `yaml:"ports"`
@@ -536,9 +538,19 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 					log.Printf("[SERVICE] Setting %d environment variable(s)", len(containerEnv))
 				}
 
+				var cmdSlice []string
+				if svc.Command != "" {
+					var err error
+					cmdSlice, err = shlex.Split(svc.Command)
+					if err != nil {
+						log.Printf("[ERROR] Failed to parse command for service '%s': %v", svcName, err)
+					}
+				}
+
 				config := &container.Config{
 					Image:        svc.Image,
 					Env:          containerEnv,
+					Cmd:          cmdSlice,
 					Labels:       map[string]string{"bunshin.stack": name, "bunshin.managed": "true"},
 					ExposedPorts: exposedPorts,
 				}
