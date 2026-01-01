@@ -14,7 +14,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
+
+	"regexp"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -42,13 +46,14 @@ var (
 // It doesn't orchestrate networks/volumes, just uses what's provided.
 type ComposeSchema struct {
 	Services map[string]struct {
-		Image       string   `yaml:"image"`
-		Container   string   `yaml:"container_name"`
-		Environment []string `yaml:"environment"`
-		Volumes     []string `yaml:"volumes"`
-		Ports       []string `yaml:"ports"`
-		Networks    []string `yaml:"networks"`
-		NetworkMode string   `yaml:"network_mode"`
+		Image           string   `yaml:"image"`
+		Container       string   `yaml:"container_name"`
+		Environment     []string `yaml:"environment"`
+		Volumes         []string `yaml:"volumes"`
+		Ports           []string `yaml:"ports"`
+		Networks        []string `yaml:"networks"`
+		NetworkMode     string   `yaml:"network_mode"`
+		DeploymentOrder int      `yaml:"deployment_order"`
 	} `yaml:"services"`
 }
 
@@ -114,6 +119,64 @@ func decrypt(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
 	return gcm.Open(nil, data[:ns], data[ns:], nil)
+}
+
+func parseEnvFile(envContent string) map[string]string {
+	envMap := make(map[string]string)
+	lines := strings.SplitSeq(envContent, "\n")
+	for line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
+				value = value[1 : len(value)-1]
+			}
+			envMap[key] = value
+		}
+	}
+	return envMap
+}
+
+func substituteEnvVars(s string, envMap map[string]string) string {
+	result := s
+	varSubst := regexp.MustCompile(`\$\{([^}]+)\}`)
+	result = varSubst.ReplaceAllStringFunc(result, func(match string) string {
+		varName := match[2 : len(match)-1]
+		// Handle ${VAR:-default} syntax
+		if strings.Contains(varName, ":-") {
+			parts := strings.SplitN(varName, ":-", 2)
+			varName = strings.TrimSpace(parts[0])
+			defaultVal := strings.TrimSpace(parts[1])
+			if val, ok := envMap[varName]; ok && val != "" {
+				return val
+			}
+			return defaultVal
+		}
+		if val, ok := envMap[varName]; ok {
+			return val
+		}
+		if val := os.Getenv(varName); val != "" {
+			return val
+		}
+		return match // Return original if not found
+	})
+	simpleVarSubst := regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
+	result = simpleVarSubst.ReplaceAllStringFunc(result, func(match string) string {
+		varName := match[1:]
+		if val, ok := envMap[varName]; ok {
+			return val
+		}
+		if val := os.Getenv(varName); val != "" {
+			return val
+		}
+		return match // Return original if not found
+	})
+	return result
 }
 
 // --- API Handlers ---
@@ -215,6 +278,26 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 				w.WriteHeader(500)
 				return
 			}
+
+			// Load and parse environment variables from .env file
+			envMap := make(map[string]string)
+			if enc, err := os.ReadFile(filepath.Join(dataPath, "env", name+".env")); err == nil {
+				dec, err := decrypt(enc)
+				if err != nil {
+					log.Printf("[START] Error decrypting env file for stack '%s': %v", name, err)
+				} else {
+					envMap = parseEnvFile(string(dec))
+					log.Printf("[START] Loaded %d environment variable(s) from .env file for stack '%s'", len(envMap), name)
+				}
+			} else {
+				log.Printf("[START] No .env file found for stack '%s' (this is okay)", name)
+			}
+
+			// Substitute environment variables in YAML before parsing
+			ymlDataStr := string(ymlData)
+			ymlDataStr = substituteEnvVars(ymlDataStr, envMap)
+			ymlData = []byte(ymlDataStr)
+
 			var comp ComposeSchema
 			if err := yaml.Unmarshal(ymlData, &comp); err != nil {
 				log.Printf("[START] Error parsing YAML for stack '%s': %v", name, err)
@@ -224,7 +307,36 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 
 			log.Printf("[START] Starting stack '%s' with %d service(s)", name, len(comp.Services))
 
+			type serviceItem struct {
+				name  string
+				order int
+			}
+
+			services := make([]serviceItem, 0, len(comp.Services))
 			for svcName, svc := range comp.Services {
+				services = append(services, serviceItem{name: svcName, order: svc.DeploymentOrder})
+			}
+
+			sort.Slice(services, func(i, j int) bool {
+				return services[i].order < services[j].order
+			})
+
+			var prevContainerName string
+			for idx, item := range services {
+				svcName := item.name
+				svc := comp.Services[svcName]
+
+				if idx > 0 && prevContainerName != "" {
+					for {
+						f := filters.NewArgs()
+						f.Add("name", prevContainerName)
+						containers, _ := cli.ContainerList(ctx, container.ListOptions{Filters: f})
+						if len(containers) > 0 && containers[0].State == "running" {
+							break
+						}
+						time.Sleep(500 * time.Millisecond)
+					}
+				}
 				log.Printf("[SERVICE] Processing service '%s' from stack '%s'", svcName, name)
 				log.Printf("[SERVICE] Image: %s", svc.Image)
 
@@ -278,9 +390,61 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 					log.Printf("[SERVICE] Using default bridge network")
 				}
 
+				containerEnv := []string{}
+				for key, value := range envMap {
+					containerEnv = append(containerEnv, key+"="+value)
+				}
+				// add/override with variables from YAML
+				for _, envLine := range svc.Environment {
+					envLine = substituteEnvVars(envLine, envMap)
+					parts := strings.SplitN(envLine, "=", 2)
+					if len(parts) == 2 {
+						key := strings.TrimSpace(parts[0])
+						value := strings.TrimSpace(parts[1])
+						if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
+							value = value[1 : len(value)-1]
+						}
+						found := false
+						for i, existingEnv := range containerEnv {
+							if strings.HasPrefix(existingEnv, key+"=") {
+								containerEnv[i] = key + "=" + value
+								found = true
+								break
+							}
+						}
+						if !found {
+							containerEnv = append(containerEnv, key+"="+value)
+						}
+					} else {
+						key := strings.TrimSpace(envLine)
+						value := ""
+						if val, ok := envMap[key]; ok {
+							value = val
+						} else if val := os.Getenv(key); val != "" {
+							value = val
+						}
+						if value != "" {
+							found := false
+							for i, existingEnv := range containerEnv {
+								if strings.HasPrefix(existingEnv, key+"=") {
+									containerEnv[i] = key + "=" + value
+									found = true
+									break
+								}
+							}
+							if !found {
+								containerEnv = append(containerEnv, key+"="+value)
+							}
+						}
+					}
+				}
+				if len(containerEnv) > 0 {
+					log.Printf("[SERVICE] Setting %d environment variable(s)", len(containerEnv))
+				}
+
 				config := &container.Config{
 					Image:        svc.Image,
-					Env:          svc.Environment,
+					Env:          containerEnv,
 					Labels:       map[string]string{"bunshin.stack": name, "bunshin.managed": "true"},
 					ExposedPorts: exposedPorts,
 				}
@@ -307,6 +471,7 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 					log.Printf("[ERROR] Failed to start container '%s': %v", cName, err)
 				} else {
 					log.Printf("[SERVICE] Successfully started container '%s'", cName)
+					prevContainerName = cName
 				}
 			}
 
