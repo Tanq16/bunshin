@@ -56,6 +56,7 @@ type ComposeSchema struct {
 		Networks        []string `yaml:"networks"`
 		NetworkMode     string   `yaml:"network_mode"`
 		DeploymentOrder int      `yaml:"deployment_order"`
+		CapAdd          []string `yaml:"cap_add"`
 	} `yaml:"services"`
 }
 
@@ -545,6 +546,12 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 				// Set NetworkMode only for special modes, not for named networks
 				if networkMode != "" {
 					hostConfig.NetworkMode = container.NetworkMode(networkMode)
+				}
+
+				// Set capabilities if specified
+				if len(svc.CapAdd) > 0 {
+					hostConfig.CapAdd = svc.CapAdd
+					log.Printf("[SERVICE] Adding capabilities: %v", svc.CapAdd)
 				}
 
 				// Always attempt removal before start to ensure fresh state
