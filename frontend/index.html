@@ -234,11 +234,21 @@
                 </div>
 
                 <!-- Pane: Logs (Direct Single Div in Crust Color) -->
-                <div id="pane-logs" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-y-auto no-scrollbar mono text-[12px] leading-relaxed text-ctp-subtext0 select-text"></div>
+                <div id="pane-logs" class="hidden flex-grow flex flex-col bg-ctp-crust rounded-3xl overflow-hidden">
+                    <div class="flex items-center justify-between px-6 pt-6 pb-3 flex-shrink-0">
+                        <select id="logs-container-select" class="bg-ctp-mantle border-2 border-ctp-surface0 text-ctp-text text-xs font-bold px-3 py-1.5 rounded-lg hover:border-ctp-mauve focus:border-ctp-mauve outline-none transition-all">
+                        </select>
+                    </div>
+                    <div id="logs-content" class="flex-grow p-6 pt-3 overflow-y-auto no-scrollbar mono text-[12px] leading-relaxed text-ctp-subtext0 select-text"></div>
+                </div>
 
                 <!-- Pane: Shell (Direct Single Div in Crust Color) -->
-                <div id="pane-shell" class="hidden flex-grow bg-ctp-crust rounded-3xl p-6 overflow-hidden">
-                    <div id="terminal" class="h-full w-full"></div>
+                <div id="pane-shell" class="hidden flex-grow flex flex-col bg-ctp-crust rounded-3xl overflow-hidden">
+                    <div class="flex items-center justify-between px-6 pt-6 pb-3 flex-shrink-0">
+                        <select id="shell-container-select" class="bg-ctp-mantle border-2 border-ctp-surface0 text-ctp-text text-xs font-bold px-3 py-1.5 rounded-lg hover:border-ctp-mauve focus:border-ctp-mauve outline-none transition-all">
+                        </select>
+                    </div>
+                    <div id="terminal" class="flex-grow p-6 pt-3 overflow-hidden"></div>
                 </div>
             </div>
         </main>

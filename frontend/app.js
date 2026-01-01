@@ -3,6 +3,9 @@ let logWs = null;
 let shellWs = null;
 let term = null;
 let statusInterval = null;
+let currentLogsContainer = null;
+let currentShellContainer = null;
+let containers = [];
 
 async function loadStacks() {
     const res = await fetch('/api/stacks');
@@ -26,6 +29,10 @@ async function loadStacks() {
 
 async function selectStack(name) {
     currentStack = name;
+    currentLogsContainer = null;
+    currentShellContainer = null;
+    containers = [];
+    
     document.getElementById('current-stack-title').innerText = name;
     
     document.getElementById('header-info').classList.remove('invisible');
@@ -80,6 +87,48 @@ function setupEditorScrollSync() {
     });
 }
 
+async function loadContainers() {
+    if (!currentStack) return;
+    try {
+        const res = await fetch(`/api/stack/containers?name=${currentStack}`);
+        containers = await res.json();
+        
+        // Update logs dropdown
+        const logsSelect = document.getElementById('logs-container-select');
+        logsSelect.innerHTML = '';
+        containers.forEach((c, idx) => {
+            const option = document.createElement('option');
+            option.value = c.id;
+            option.textContent = c.name;
+            if (idx === 0 && !currentLogsContainer) {
+                option.selected = true;
+                currentLogsContainer = c.id;
+            } else if (c.id === currentLogsContainer) {
+                option.selected = true;
+            }
+            logsSelect.appendChild(option);
+        });
+        
+        // Update shell dropdown
+        const shellSelect = document.getElementById('shell-container-select');
+        shellSelect.innerHTML = '';
+        containers.forEach((c, idx) => {
+            const option = document.createElement('option');
+            option.value = c.id;
+            option.textContent = c.name;
+            if (idx === 0 && !currentShellContainer) {
+                option.selected = true;
+                currentShellContainer = c.id;
+            } else if (c.id === currentShellContainer) {
+                option.selected = true;
+            }
+            shellSelect.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Failed to load containers:', error);
+    }
+}
+
 function switchTab(tab) {
     ['stack', 'logs', 'shell'].forEach(t => {
         document.getElementById(`pane-${t}`).classList.add('hidden');
@@ -90,8 +139,12 @@ function switchTab(tab) {
     document.getElementById(`tab-${tab}`).className = "px-6 py-1.5 rounded-pill text-xs font-bold transition-all tab-active";
 
     stopStreams();
-    if (tab === 'logs') startLogs();
-    if (tab === 'shell') startShell();
+    if (tab === 'logs') {
+        loadContainers().then(() => startLogs());
+    }
+    if (tab === 'shell') {
+        loadContainers().then(() => startShell());
+    }
 }
 
 async function updateStatus() {
@@ -177,20 +230,44 @@ function toggleStack() {
 }
 
 function startLogs() {
-    const pane = document.getElementById('pane-logs');
-    pane.innerHTML = '<div class="opacity-50 italic">... attaching to logs</div>';
+    const logsContent = document.getElementById('logs-content');
+    const select = document.getElementById('logs-container-select');
+    const containerID = select.value || (containers.length > 0 ? containers[0].id : null);
     
-    logWs = new WebSocket(`ws://${window.location.host}/ws/logs?name=${currentStack}`);
+    if (!containerID) {
+        logsContent.innerHTML = '<div class="opacity-50 italic">No containers available</div>';
+        return;
+    }
+    
+    currentLogsContainer = containerID;
+    logsContent.innerHTML = '<div class="opacity-50 italic">... attaching to logs</div>';
+    
+    if (logWs) logWs.close();
+    logWs = new WebSocket(`ws://${window.location.host}/ws/logs?name=${currentStack}&container=${containerID}`);
     logWs.onmessage = (e) => {
         const div = document.createElement('div');
         div.className = "mb-1";
         div.innerText = e.data;
-        pane.appendChild(div);
-        pane.scrollTop = pane.scrollHeight;
+        logsContent.appendChild(div);
+        logsContent.scrollTop = logsContent.scrollHeight;
+    };
+    logWs.onerror = () => {
+        logsContent.innerHTML = '<div class="opacity-50 italic">Error connecting to logs</div>';
     };
 }
 
 function startShell() {
+    const select = document.getElementById('shell-container-select');
+    const containerID = select.value || (containers.length > 0 ? containers[0].id : null);
+    
+    if (!containerID) {
+        const terminalDiv = document.getElementById('terminal');
+        terminalDiv.innerHTML = '<div class="opacity-50 italic">No containers available</div>';
+        return;
+    }
+    
+    currentShellContainer = containerID;
+    
     if (term) term.dispose();
     term = new Terminal({
         theme: { background: '#11111b', foreground: '#cdd6f4', cursor: '#cba6f7' },
@@ -201,8 +278,12 @@ function startShell() {
     });
     term.open(document.getElementById('terminal'));
     
-    shellWs = new WebSocket(`ws://${window.location.host}/ws/shell?name=${currentStack}`);
+    if (shellWs) shellWs.close();
+    shellWs = new WebSocket(`ws://${window.location.host}/ws/shell?name=${currentStack}&container=${containerID}`);
     shellWs.onmessage = (e) => term.write(e.data);
+    shellWs.onerror = () => {
+        term.write('\r\nError connecting to shell\r\n');
+    };
     term.onData(data => { if (shellWs.readyState === 1) shellWs.send(data); });
 }
 
@@ -297,4 +378,15 @@ PGID=1000`;
 window.onload = () => {
     loadStacks();
     setupEditorScrollSync();
+    
+    // Setup container dropdown change handlers
+    document.getElementById('logs-container-select').addEventListener('change', () => {
+        stopStreams();
+        startLogs();
+    });
+    
+    document.getElementById('shell-container-select').addEventListener('change', () => {
+        stopStreams();
+        startShell();
+    });
 };

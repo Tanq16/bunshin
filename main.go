@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
@@ -85,6 +86,7 @@ func main() {
 	http.HandleFunc("/api/stack/save", handleSaveStack)
 	http.HandleFunc("/api/stack/status", handleStatus(cli))
 	http.HandleFunc("/api/stack/action", handleAction(cli))
+	http.HandleFunc("/api/stack/containers", handleContainers(cli))
 	http.HandleFunc("/ws/logs", handleLogs(cli))
 	http.HandleFunc("/ws/shell", handleShell(cli))
 
@@ -326,10 +328,34 @@ func handleAction(cli *client.Client) http.HandlerFunc {
 	}
 }
 
+func handleContainers(cli *client.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		f := filters.NewArgs()
+		f.Add("label", "bunshin.stack="+name)
+		containers, _ := cli.ContainerList(context.Background(), container.ListOptions{Filters: f})
+
+		type ContainerInfo struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		containerList := []ContainerInfo{}
+		for _, c := range containers {
+			containerName := strings.TrimPrefix(c.Names[0], "/")
+			containerList = append(containerList, ContainerInfo{
+				ID:   c.ID,
+				Name: containerName,
+			})
+		}
+		json.NewEncoder(w).Encode(containerList)
+	}
+}
+
 func handleLogs(cli *client.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
-		log.Printf("[LOGS] WebSocket connection requested for stack '%s'", name)
+		containerID := r.URL.Query().Get("container")
+		log.Printf("[LOGS] WebSocket connection requested for stack '%s', container '%s'", name, containerID)
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -346,8 +372,22 @@ func handleLogs(cli *client.Client) http.HandlerFunc {
 			return
 		}
 
-		log.Printf("[LOGS] Streaming logs for container '%s' (ID: %s)", containers[0].Names[0], containers[0].ID[:12])
-		logs, err := cli.ContainerLogs(context.Background(), containers[0].ID, container.LogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Tail: "200"})
+		var targetContainer *types.Container
+		if containerID != "" {
+			for i := range containers {
+				if containers[i].ID == containerID || strings.HasPrefix(containers[i].ID, containerID) {
+					targetContainer = &containers[i]
+					break
+				}
+			}
+		}
+		if targetContainer == nil {
+			targetContainer = &containers[0]
+		}
+
+		containerName := strings.TrimPrefix(targetContainer.Names[0], "/")
+		log.Printf("[LOGS] Streaming logs for container '%s' (ID: %s)", containerName, targetContainer.ID[:12])
+		logs, err := cli.ContainerLogs(context.Background(), targetContainer.ID, container.LogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Tail: "200"})
 		if err != nil {
 			log.Printf("[LOGS] Error getting container logs: %v", err)
 			return
@@ -371,7 +411,8 @@ func handleLogs(cli *client.Client) http.HandlerFunc {
 func handleShell(cli *client.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
-		log.Printf("[SHELL] WebSocket connection requested for stack '%s'", name)
+		containerID := r.URL.Query().Get("container")
+		log.Printf("[SHELL] WebSocket connection requested for stack '%s', container '%s'", name, containerID)
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -388,8 +429,22 @@ func handleShell(cli *client.Client) http.HandlerFunc {
 			return
 		}
 
-		log.Printf("[SHELL] Opening shell in container '%s' (ID: %s)", containers[0].Names[0], containers[0].ID[:12])
-		exec, err := cli.ContainerExecCreate(context.Background(), containers[0].ID, container.ExecOptions{
+		var targetContainer *types.Container
+		if containerID != "" {
+			for i := range containers {
+				if containers[i].ID == containerID || strings.HasPrefix(containers[i].ID, containerID) {
+					targetContainer = &containers[i]
+					break
+				}
+			}
+		}
+		if targetContainer == nil {
+			targetContainer = &containers[0]
+		}
+
+		containerName := strings.TrimPrefix(targetContainer.Names[0], "/")
+		log.Printf("[SHELL] Opening shell in container '%s' (ID: %s)", containerName, targetContainer.ID[:12])
+		exec, err := cli.ContainerExecCreate(context.Background(), targetContainer.ID, container.ExecOptions{
 			AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: true, Cmd: []string{"/bin/sh"},
 		})
 		if err != nil {
