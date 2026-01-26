@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -125,7 +126,7 @@ func (c *Controller) StopStack(ctx context.Context, name string) error {
 	return nil
 }
 
-func (c *Controller) StartStack(ctx context.Context, name string, project *types.Project, isUpdate bool) error {
+func (c *Controller) StartStack(ctx context.Context, name string, project *types.Project, isUpdate bool, stackEnv map[string]string) error {
 	log.Printf("[START] Starting stack '%s' with %d service(s)", name, len(project.Services))
 	// Sort services by dependencies so dependencies are started first
 	sortedServices := stackmanager.SortServicesByDependencies(project.Services)
@@ -212,7 +213,9 @@ func (c *Controller) StartStack(ctx context.Context, name string, project *types
 				}
 				networkingConfig = &network.NetworkingConfig{
 					EndpointsConfig: map[string]*network.EndpointSettings{
-						resolvedNetwork: {},
+						resolvedNetwork: {
+							Aliases: []string{svc.Name},
+						},
 					},
 				}
 				networkMode = ""
@@ -232,7 +235,9 @@ func (c *Controller) StartStack(ctx context.Context, name string, project *types
 					log.Printf("[ERROR] Skipping container '%s' due to network error", cName)
 					continue
 				}
-				endpointsConfig[resolvedNetwork] = &network.EndpointSettings{}
+				endpointsConfig[resolvedNetwork] = &network.EndpointSettings{
+					Aliases: []string{svc.Name},
+				}
 				networkNames = append(networkNames, resolvedNetwork)
 			}
 
@@ -248,11 +253,23 @@ func (c *Controller) StartStack(ctx context.Context, name string, project *types
 			log.Printf("[SERVICE] Using default bridge network")
 		}
 
-		envList := []string{}
+		finalEnvMap := make(map[string]string)
+		if len(svc.EnvFiles) > 0 {
+			log.Printf("[SERVICE] env_file detected for '%s', injecting stack environment", svc.Name)
+			maps.Copy(finalEnvMap, stackEnv)
+		}
 		for k, v := range svc.Environment {
 			if v != nil {
-				envList = append(envList, fmt.Sprintf("%s=%s", k, *v))
+				finalEnvMap[k] = *v
+			} else {
+				if val, exists := stackEnv[k]; exists {
+					finalEnvMap[k] = val
+				}
 			}
+		}
+		envList := []string{}
+		for k, v := range finalEnvMap {
+			envList = append(envList, fmt.Sprintf("%s=%s", k, v))
 		}
 		if len(envList) > 0 {
 			log.Printf("[SERVICE] Setting %d environment variable(s)", len(envList))
@@ -320,19 +337,23 @@ func (c *Controller) ListContainers(name string) ([]ContainerInfo, error) {
 	ctx := context.Background()
 	f := filters.NewArgs()
 	f.Add("label", "bunshin.stack="+name)
-	containers, _ := c.cli.ContainerList(ctx, container.ListOptions{Filters: f})
+	containers, _ := c.cli.ContainerList(ctx, container.ListOptions{Filters: f, All: true})
 	containerList := []ContainerInfo{}
 	for _, container := range containers {
 		containerName := strings.TrimPrefix(container.Names[0], "/")
 		containerList = append(containerList, ContainerInfo{
-			ID:   container.ID,
-			Name: containerName,
+			ID:     container.ID,
+			Name:   containerName,
+			Status: container.Status,
+			State:  container.State,
 		})
 	}
 	return containerList, nil
 }
 
 type ContainerInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	State  string `json:"state"`
 }

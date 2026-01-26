@@ -53,7 +53,7 @@ func main() {
 	http.HandleFunc("/api/stack/get", handleGetStack(stackMgr))
 	http.HandleFunc("/api/stack/save", handleSaveStack(stackMgr))
 	http.HandleFunc("/api/stack/status", handleStatus(dockerCtrl))
-	http.HandleFunc("/api/stack/action", handleAction(dockerCtrl, stackMgr))
+	http.HandleFunc("/api/stack/action", handleAction(dockerCtrl, stackMgr, envMgr))
 	http.HandleFunc("/api/stack/containers", handleContainers(dockerCtrl))
 	http.HandleFunc("/ws/logs", dockerCtrl.HandleLogs)
 	http.HandleFunc("/ws/shell", dockerCtrl.HandleShell)
@@ -111,7 +111,7 @@ func handleStatus(dockerCtrl *dockercontroller.Controller) http.HandlerFunc {
 	}
 }
 
-func handleAction(dockerCtrl *dockercontroller.Controller, stackMgr *stackmanager.Manager) http.HandlerFunc {
+func handleAction(dockerCtrl *dockercontroller.Controller, stackMgr *stackmanager.Manager, envMgr *envmanager.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
 		action := r.URL.Query().Get("action")
@@ -130,8 +130,9 @@ func handleAction(dockerCtrl *dockercontroller.Controller, stackMgr *stackmanage
 				w.WriteHeader(500)
 				return
 			}
+			stackEnv := envMgr.GetEnvMap(name)
 			isUpdate := action == "update"
-			if err := dockerCtrl.StartStack(ctx, name, project, isUpdate); err != nil {
+			if err := dockerCtrl.StartStack(ctx, name, project, isUpdate, stackEnv); err != nil {
 				log.Printf("[START] Error starting stack '%s': %v", name, err)
 				w.WriteHeader(500)
 				return

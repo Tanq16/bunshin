@@ -14,17 +14,22 @@ async function loadStacks() {
     
     list.innerHTML = '';
     
-    stacks.forEach(s => {
+    for (const s of stacks) {
+        const statusRes = await fetch(`/api/stack/status?name=${s}`);
+        const status = await statusRes.text();
+        const isOperational = status === 'Operational';
+        
         const btn = document.createElement('button');
         btn.onclick = () => selectStack(s);
         const activeClass = currentStack === s ? 'bg-ctp-surface0 text-ctp-text' : 'hover:bg-ctp-surface0/50 text-ctp-subtext0';
         btn.className = `w-full flex items-center px-4 py-3 rounded-pill transition-all ${activeClass}`;
+        const iconColor = isOperational ? (currentStack === s ? 'text-ctp-green' : 'text-ctp-blue') : 'text-ctp-maroon';
         btn.innerHTML = `
-            <i class="fas fa-server mr-3 ${currentStack === s ? 'text-ctp-green' : 'text-ctp-blue'} text-sm"></i>
+            <i class="fas fa-server mr-3 ${iconColor} text-sm"></i>
             <span class="text-sm font-medium">${s}</span>
         `;
         list.appendChild(btn);
-    });
+    }
 }
 
 async function selectStack(name) {
@@ -152,6 +157,11 @@ async function updateStatus() {
     const res = await fetch(`/api/stack/status?name=${currentStack}`);
     const status = await res.text();
     
+    const containersRes = await fetch(`/api/stack/containers?name=${currentStack}`);
+    const containersList = await containersRes.json();
+    const totalContainers = containersList.length;
+    const operationalContainers = containersList.filter(c => c.state === 'running').length;
+    
     const dot = document.getElementById('status-dot');
     const text = document.getElementById('status-text');
     const btn = document.getElementById('toggle-btn');
@@ -159,7 +169,7 @@ async function updateStatus() {
     if (status === 'Operational') {
         dot.className = "w-2 h-2 bg-ctp-green rounded-full";
         text.className = "text-[11px] text-ctp-green font-bold uppercase tracking-wider";
-        text.innerText = "Operational";
+        text.innerText = `Operational (${operationalContainers}/${totalContainers})`;
         btn.className = "bg-ctp-red/10 text-ctp-red hover:bg-ctp-red hover:text-ctp-base px-6 py-2 rounded-pill text-xs font-bold transition-all flex items-center gap-2";
         btn.innerHTML = '<i class="fas fa-stop text-[10px]"></i> STOP';
     } else {
