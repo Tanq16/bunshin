@@ -66,8 +66,17 @@ func (m *Manager) LoadProject(ctx context.Context, name string) (*types.Project,
 		return nil, err
 	}
 	envMap := m.envMgr.GetEnvMap(name)
+	tempDir, err := os.MkdirTemp("", "bunshin-"+name+"-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tempDir)
+	envContent, _ := m.envMgr.ReadEnv(name)
+	if envContent != "" {
+		os.WriteFile(filepath.Join(tempDir, ".env"), []byte(envContent), 0644)
+	}
 	project, err := loader.LoadWithContext(ctx, types.ConfigDetails{
-		WorkingDir: ".",
+		WorkingDir: tempDir,
 		ConfigFiles: []types.ConfigFile{
 			{Filename: name + ".yml", Content: ymlData},
 		},

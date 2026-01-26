@@ -236,7 +236,7 @@ async function performAction(action) {
 
 function toggleStack() {
     const status = document.getElementById('status-text').innerText;
-    performAction(status.toLowerCase() === 'operational' ? 'stop' : 'start');
+    performAction(status.toLowerCase().startsWith('operational') ? 'stop' : 'start');
 }
 
 function startLogs() {
