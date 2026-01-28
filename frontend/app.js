@@ -22,7 +22,7 @@ async function loadStacks() {
         const btn = document.createElement('button');
         btn.onclick = () => selectStack(s);
         const activeClass = currentStack === s ? 'bg-ctp-surface0 text-ctp-text' : 'hover:bg-ctp-surface0/50 text-ctp-subtext0';
-        btn.className = `w-full flex items-center px-4 py-3 rounded-pill transition-all ${activeClass}`;
+        btn.className = `w-full flex items-center px-2 py-1 rounded-pill transition-all ${activeClass}`;
         const iconColor = isOperational ? (currentStack === s ? 'text-ctp-green' : 'text-ctp-blue') : 'text-ctp-maroon';
         btn.innerHTML = `
             <i class="fas fa-server mr-3 ${iconColor} text-sm"></i>
